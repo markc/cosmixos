@@ -1,0 +1,17 @@
+[application]
+name = "cosmix-mail"
+default_platform = "desktop"
+
+[desktop]
+enable_default_menu_bar = false
+
+[web.app]
+title = "cosmix-mail"
+
+[web.watcher]
+reload_html = true
+watch_path = ["src", "assets"]
+
+[application.tools.tailwindcss]
+input = "input.css"
+output = "assets/tailwind.css"
