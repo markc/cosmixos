@@ -32,7 +32,7 @@ enum Command {
     /// Start the web server
     Serve {
         /// Listen address
-        #[arg(long, default_value = "0.0.0.0:8443")]
+        #[arg(long, default_value = "0.0.0.0:8080")]
         listen: String,
 
         /// Directory containing pre-built Dioxus WASM apps
