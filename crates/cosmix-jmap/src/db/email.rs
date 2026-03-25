@@ -23,7 +23,7 @@ pub struct Email {
     #[serde(rename = "receivedAt")]
     pub received_at: String,
     #[serde(rename = "messageId", skip_serializing_if = "Option::is_none")]
-    pub message_id: Option<String>,
+    pub message_id: Option<Vec<String>>,
     #[serde(rename = "inReplyTo", skip_serializing_if = "Option::is_none")]
     pub in_reply_to: Option<Vec<String>>,
     pub subject: Option<String>,
@@ -75,7 +75,7 @@ fn row_to_email(row: &rusqlite::Row<'_>) -> rusqlite::Result<Email> {
         blob_id: row.get(4)?,
         size: row.get(5)?,
         received_at: row.get(6)?,
-        message_id: row.get(7)?,
+        message_id: row.get::<_, Option<String>>(7)?.map(|s| vec![s]),
         in_reply_to,
         subject: row.get(9)?,
         from_addr,
