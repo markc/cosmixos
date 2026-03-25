@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use mail_builder::MessageBuilder;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
@@ -28,6 +29,10 @@ pub struct Mailbox {
     pub role: Option<String>,
     #[serde(rename = "sortOrder")]
     pub sort_order: i32,
+    #[serde(rename = "totalEmails", default)]
+    pub total_emails: u32,
+    #[serde(rename = "unreadEmails", default)]
+    pub unread_emails: u32,
 }
 
 #[derive(Deserialize, Debug, Clone, PartialEq)]
@@ -42,6 +47,9 @@ pub struct Email {
     pub subject: Option<String>,
     pub from: Option<Vec<EmailAddress>>,
     pub to: Option<Vec<EmailAddress>>,
+    pub cc: Option<Vec<EmailAddress>>,
+    #[serde(rename = "messageId")]
+    pub message_id: Option<Vec<String>>,
     pub date: Option<String>,
     pub preview: Option<String>,
     #[serde(rename = "receivedAt")]
@@ -134,6 +142,13 @@ pub struct QueryResponse {
     pub total: Option<u64>,
 }
 
+#[derive(Deserialize, Debug)]
+pub struct BlobUploadResponse {
+    #[serde(rename = "blobId")]
+    pub blob_id: String,
+    pub size: u64,
+}
+
 // --- Client ---
 
 #[derive(Clone)]
@@ -162,6 +177,7 @@ impl JmapClient {
             using: vec![
                 "urn:ietf:params:jmap:core".into(),
                 "urn:ietf:params:jmap:mail".into(),
+                "urn:ietf:params:jmap:submission".into(),
             ],
             method_calls,
         };
@@ -231,5 +247,186 @@ impl JmapClient {
             .ok_or_else(|| anyhow!("empty response"))?;
         let get: GetResponse<Email> = serde_json::from_value(data)?;
         Ok(get.list)
+    }
+
+    /// Update email properties (keywords, mailboxIds).
+    pub async fn update_email(&self, id: &str, patch: serde_json::Value) -> Result<()> {
+        let resp = self
+            .call(vec![(
+                "Email/set".into(),
+                serde_json::json!({ "update": { id: patch } }),
+                "u0".into(),
+            )])
+            .await?;
+        let (_, data, _) = resp
+            .method_responses
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("empty response"))?;
+        if let Some(errors) = data.get("notUpdated").and_then(|v| v.as_object()) {
+            if let Some(err) = errors.get(id) {
+                return Err(anyhow!("Update failed: {}", err));
+            }
+        }
+        Ok(())
+    }
+
+    /// Permanently destroy an email.
+    pub async fn destroy_email(&self, id: &str) -> Result<()> {
+        let resp = self
+            .call(vec![(
+                "Email/set".into(),
+                serde_json::json!({ "destroy": [id] }),
+                "d0".into(),
+            )])
+            .await?;
+        let (_, data, _) = resp
+            .method_responses
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("empty response"))?;
+        if let Some(errors) = data.get("notDestroyed").and_then(|v| v.as_object()) {
+            if let Some(err) = errors.get(id) {
+                return Err(anyhow!("Destroy failed: {}", err));
+            }
+        }
+        Ok(())
+    }
+
+    /// Upload raw bytes as a blob, returns the blobId.
+    pub async fn upload_blob(&self, data: &[u8]) -> Result<String> {
+        let resp = self
+            .http
+            .post(format!("{}/jmap/upload/1", self.base_url))
+            .basic_auth(&self.email, Some(&self.password))
+            .header("Content-Type", "application/octet-stream")
+            .body(data.to_vec())
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            return Err(anyhow!("Blob upload failed: {}", resp.status()));
+        }
+        let upload: BlobUploadResponse = resp.json().await?;
+        Ok(upload.blob_id)
+    }
+
+    /// Create an email record from an uploaded blob.
+    pub async fn create_email(
+        &self,
+        blob_id: &str,
+        mailbox_id: &str,
+        keywords: serde_json::Value,
+    ) -> Result<String> {
+        let resp = self
+            .call(vec![(
+                "Email/set".into(),
+                serde_json::json!({
+                    "create": {
+                        "draft1": {
+                            "blobId": blob_id,
+                            "mailboxIds": { mailbox_id: true },
+                            "keywords": keywords
+                        }
+                    }
+                }),
+                "c0".into(),
+            )])
+            .await?;
+        let (_, data, _) = resp
+            .method_responses
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("empty response"))?;
+        if let Some(errors) = data.get("notCreated").and_then(|v| v.as_object()) {
+            if let Some(err) = errors.get("draft1") {
+                return Err(anyhow!("Create failed: {}", err));
+            }
+        }
+        let email_id = data
+            .get("created")
+            .and_then(|c| c.get("draft1"))
+            .and_then(|d| d.get("id"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("No id in create response"))?;
+        Ok(email_id.to_string())
+    }
+
+    /// Submit an email for SMTP delivery.
+    pub async fn submit_email(&self, email_id: &str) -> Result<()> {
+        let resp = self
+            .call(vec![(
+                "EmailSubmission/set".into(),
+                serde_json::json!({
+                    "create": {
+                        "sub1": {
+                            "emailId": email_id,
+                            "identityId": "1"
+                        }
+                    }
+                }),
+                "s0".into(),
+            )])
+            .await?;
+        let (_, data, _) = resp
+            .method_responses
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("empty response"))?;
+        if let Some(errors) = data.get("notCreated").and_then(|v| v.as_object()) {
+            if let Some(err) = errors.get("sub1") {
+                return Err(anyhow!("Submit failed: {}", err));
+            }
+        }
+        Ok(())
+    }
+
+    /// High-level compose + send: build MIME → upload blob → create email → submit.
+    pub async fn send_compose(
+        &self,
+        from: &str,
+        to: &[String],
+        cc: &[String],
+        subject: &str,
+        body: &str,
+        in_reply_to: Option<&str>,
+        drafts_mailbox_id: &str,
+    ) -> Result<()> {
+        // Build RFC 5322 MIME message
+        let mut msg = MessageBuilder::new();
+        msg = msg.from(from.to_string());
+        for addr in to {
+            msg = msg.to(addr.trim().to_string());
+        }
+        for addr in cc {
+            let trimmed = addr.trim();
+            if !trimmed.is_empty() {
+                msg = msg.cc(trimmed.to_string());
+            }
+        }
+        msg = msg.subject(subject);
+        if let Some(reply_id) = in_reply_to {
+            msg = msg.in_reply_to(reply_id.to_string());
+        }
+        msg = msg.text_body(body);
+
+        let mime_bytes = msg.write_to_vec()
+            .map_err(|e| anyhow!("Failed to build MIME: {e}"))?;
+
+        // Upload blob
+        let blob_id = self.upload_blob(&mime_bytes).await?;
+
+        // Create email record (as draft, seen)
+        let email_id = self
+            .create_email(
+                &blob_id,
+                drafts_mailbox_id,
+                serde_json::json!({"$seen": true, "$draft": true}),
+            )
+            .await?;
+
+        // Submit for delivery (server moves to Sent automatically)
+        self.submit_email(&email_id).await?;
+
+        Ok(())
     }
 }

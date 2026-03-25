@@ -148,7 +148,7 @@ pub async fn query(db: &Db, account_id: i32, args: serde_json::Value) -> Result<
     Ok(serde_json::to_value(resp)?)
 }
 
-/// Email/set — handles updates (keywords, mailboxIds with spam retraining) and destroy.
+/// Email/set — handles create (from uploaded blob), updates (keywords, mailboxIds with spam retraining), and destroy.
 pub async fn set(
     db: &Db,
     account_id: i32,
@@ -158,10 +158,30 @@ pub async fn set(
     let acct = account_id.to_string();
     let old_state = db::changelog::current_state(&db.pool, account_id, "Email").await?;
 
+    let mut created_map = std::collections::HashMap::new();
+    let mut not_created = std::collections::HashMap::new();
     let mut updated_map = std::collections::HashMap::new();
     let mut destroyed_list = Vec::new();
     let mut not_updated = std::collections::HashMap::new();
     let mut not_destroyed = std::collections::HashMap::new();
+
+    // Handle create — build email record from an uploaded blob
+    if let Some(create) = args.get("create").and_then(|v| v.as_object()) {
+        for (client_id, entry) in create {
+            match create_from_blob(db, account_id, entry).await {
+                Ok(email_id) => {
+                    db::changelog::record(&db.pool, account_id, "Email", email_id, "created").await?;
+                    created_map.insert(client_id.clone(), serde_json::json!({ "id": email_id.to_string() }));
+                }
+                Err(e) => {
+                    not_created.insert(client_id.clone(), SetError {
+                        error_type: "invalidArguments".into(),
+                        description: Some(e.to_string()),
+                    });
+                }
+            }
+        }
+    }
 
     // Look up the Junk mailbox ID for spam retraining
     let junk_id = db::mailbox::get_by_role(&db.pool, account_id, "junk").await?;
@@ -261,15 +281,142 @@ pub async fn set(
         account_id: acct,
         old_state,
         new_state,
-        created: None,
-        updated: if updated_map.is_empty() { None } else { Some(updated_map.into_iter().map(|(k, v)| (k, v)).collect()) },
+        created: if created_map.is_empty() { None } else { Some(created_map) },
+        updated: if updated_map.is_empty() { None } else { Some(updated_map.into_iter().collect()) },
         destroyed: if destroyed_list.is_empty() { None } else { Some(destroyed_list) },
-        not_created: None,
+        not_created: if not_created.is_empty() { None } else { Some(not_created) },
         not_updated: if not_updated.is_empty() { None } else { Some(not_updated) },
         not_destroyed: if not_destroyed.is_empty() { None } else { Some(not_destroyed) },
     };
 
     Ok(serde_json::to_value(resp)?)
+}
+
+/// Create an email record from an uploaded blob (used by Email/set create).
+/// Expects: blobId (required), mailboxIds (required object like {"uuid": true}), keywords (optional).
+async fn create_from_blob(
+    db: &Db,
+    account_id: i32,
+    entry: &serde_json::Value,
+) -> Result<Uuid> {
+    use mail_parser::{HeaderValue, MessageParser};
+
+    // Required: blobId
+    let blob_id_str = entry.get("blobId")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("blobId is required"))?;
+    let blob_id: Uuid = blob_id_str.parse()
+        .map_err(|_| anyhow::anyhow!("Invalid blobId"))?;
+
+    // Required: mailboxIds — object like {"uuid": true}
+    let mailbox_ids_obj = entry.get("mailboxIds")
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| anyhow::anyhow!("mailboxIds is required"))?;
+    let mailbox_ids: Vec<Uuid> = mailbox_ids_obj.keys()
+        .filter_map(|k| k.parse().ok())
+        .collect();
+    if mailbox_ids.is_empty() {
+        return Err(anyhow::anyhow!("mailboxIds must contain at least one valid mailbox ID"));
+    }
+
+    // Load blob data
+    let blob_data = db::blob::load(&db.pool, &db.blob_dir, blob_id).await?
+        .ok_or_else(|| anyhow::anyhow!("Blob not found: {blob_id}"))?;
+
+    // Parse MIME message (same pattern as smtp/inbound.rs)
+    let parser = MessageParser::default();
+    let message = parser.parse(&blob_data)
+        .ok_or_else(|| anyhow::anyhow!("Failed to parse MIME message"))?;
+
+    let subject = message.subject().map(|s| s.to_string());
+    let message_id = message.message_id().map(|s| s.to_string());
+    let date = message.date().map(|d| {
+        chrono::DateTime::from_timestamp(d.to_timestamp(), 0)
+            .unwrap_or_else(chrono::Utc::now)
+    });
+    let in_reply_to: Option<Vec<String>> = match message.in_reply_to() {
+        HeaderValue::Text(s) => Some(vec![s.to_string()]),
+        HeaderValue::TextList(list) => Some(list.iter().map(|s| s.to_string()).collect()),
+        _ => None,
+    };
+
+    let from_addr = extract_addresses(message.from());
+    let to_addr = extract_addresses(message.to());
+    let cc_addr = extract_addresses(message.cc());
+    let preview = message.body_preview(256).map(|s| s.to_string());
+    let has_attachment = message.attachment_count() > 0;
+    let size = blob_data.len() as i32;
+
+    // Find or create thread
+    let thread_id = db::thread::find_or_create(
+        &db.pool,
+        account_id,
+        message_id.as_deref(),
+        in_reply_to.as_deref(),
+    ).await?;
+
+    // Optional: keywords from request (e.g., {"$draft": true, "$seen": true})
+    let keywords = entry.get("keywords");
+
+    // Create email record
+    let email_id = db::email::create(
+        &db.pool,
+        account_id,
+        thread_id,
+        &mailbox_ids,
+        blob_id,
+        size,
+        message_id.as_deref(),
+        in_reply_to.as_deref(),
+        subject.as_deref(),
+        from_addr.as_ref(),
+        to_addr.as_ref(),
+        cc_addr.as_ref(),
+        date,
+        preview.as_deref(),
+        has_attachment,
+        None, // spam_score — not applicable for client-created emails
+        None, // spam_verdict
+    ).await?;
+
+    // Apply keywords if provided
+    if let Some(keywords) = keywords {
+        db::email::update_keywords(&db.pool, account_id, email_id, keywords).await?;
+    }
+
+    Ok(email_id)
+}
+
+/// Extract addresses from a mail-parser Address into JSON (shared with smtp/inbound).
+fn extract_addresses(addr: Option<&mail_parser::Address<'_>>) -> Option<serde_json::Value> {
+    let addr = addr?;
+    match addr {
+        mail_parser::Address::List(list) => {
+            let addrs: Vec<serde_json::Value> = list
+                .iter()
+                .map(|a| {
+                    serde_json::json!({
+                        "name": a.name.as_deref().unwrap_or(""),
+                        "email": a.address.as_deref().unwrap_or("")
+                    })
+                })
+                .collect();
+            Some(serde_json::Value::Array(addrs))
+        }
+        mail_parser::Address::Group(groups) => {
+            let addrs: Vec<serde_json::Value> = groups
+                .iter()
+                .flat_map(|g| g.addresses.iter())
+                .map(|a| {
+                    serde_json::json!({
+                        "name": a.name.as_deref().unwrap_or(""),
+                        "email": a.address.as_deref().unwrap_or("")
+                    })
+                })
+                .collect();
+            Some(serde_json::Value::Array(addrs))
+        }
+    }
 }
 
 /// Email/changes

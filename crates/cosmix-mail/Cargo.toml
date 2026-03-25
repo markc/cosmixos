@@ -29,3 +29,4 @@ anyhow.workspace = true
 uuid.workspace = true
 chrono.workspace = true
 pulldown-cmark.workspace = true
+mail-builder.workspace = true

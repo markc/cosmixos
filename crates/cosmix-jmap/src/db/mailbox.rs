@@ -16,12 +16,26 @@ pub struct Mailbox {
     pub role: Option<String>,
     #[serde(rename = "sortOrder")]
     pub sort_order: i32,
+    #[serde(rename = "totalEmails")]
+    pub total_emails: i64,
+    #[serde(rename = "unreadEmails")]
+    pub unread_emails: i64,
 }
 
 pub async fn get_by_ids(pool: &PgPool, account_id: i32, ids: &[Uuid]) -> Result<Vec<Mailbox>> {
     let rows = sqlx::query_as::<_, Mailbox>(
-        "SELECT id, account_id, name, parent_id, role, sort_order \
-         FROM mailboxes WHERE account_id = $1 AND id = ANY($2)",
+        "SELECT m.id, m.account_id, m.name, m.parent_id, m.role, m.sort_order, \
+                COALESCE(c.total, 0) as total_emails, \
+                COALESCE(c.unread, 0) as unread_emails \
+         FROM mailboxes m \
+         LEFT JOIN ( \
+             SELECT unnest(mailbox_ids) as mbox_id, \
+                    COUNT(*) as total, \
+                    COUNT(*) FILTER (WHERE NOT (keywords ? '$seen')) as unread \
+             FROM emails WHERE account_id = $1 \
+             GROUP BY mbox_id \
+         ) c ON c.mbox_id = m.id \
+         WHERE m.account_id = $1 AND m.id = ANY($2)",
     )
     .bind(account_id)
     .bind(ids)
@@ -32,8 +46,18 @@ pub async fn get_by_ids(pool: &PgPool, account_id: i32, ids: &[Uuid]) -> Result<
 
 pub async fn get_all(pool: &PgPool, account_id: i32) -> Result<Vec<Mailbox>> {
     let rows = sqlx::query_as::<_, Mailbox>(
-        "SELECT id, account_id, name, parent_id, role, sort_order \
-         FROM mailboxes WHERE account_id = $1 ORDER BY sort_order, name",
+        "SELECT m.id, m.account_id, m.name, m.parent_id, m.role, m.sort_order, \
+                COALESCE(c.total, 0) as total_emails, \
+                COALESCE(c.unread, 0) as unread_emails \
+         FROM mailboxes m \
+         LEFT JOIN ( \
+             SELECT unnest(mailbox_ids) as mbox_id, \
+                    COUNT(*) as total, \
+                    COUNT(*) FILTER (WHERE NOT (keywords ? '$seen')) as unread \
+             FROM emails WHERE account_id = $1 \
+             GROUP BY mbox_id \
+         ) c ON c.mbox_id = m.id \
+         WHERE m.account_id = $1 ORDER BY m.sort_order, m.name",
     )
     .bind(account_id)
     .fetch_all(pool)
