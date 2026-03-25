@@ -10,9 +10,9 @@ use jmap::{Email, JmapClient, Mailbox};
 
 const TAILWIND_CSS: Asset = asset!("/assets/tailwind.css");
 
-pub const JMAP_URL: &str = "https://172.16.2.4:8443";
-pub const JMAP_USER: &str = "markc@goldcoast.org";
-pub const JMAP_PASS: &str = "changeme_N0W";
+pub const JMAP_URL: &str = "https://mail.kanary.org:8443";
+pub const JMAP_USER: &str = "markc@kanary.org";
+pub const JMAP_PASS: &str = "changeme123";
 
 fn main() {
     #[cfg(target_os = "linux")]
@@ -164,28 +164,34 @@ fn app() -> Element {
             if let Some(state) = compose() {
                 ComposeView {
                     state: state,
-                    on_send: move |cs: ComposeState| {
-                        let c = client.peek().clone();
-                        let drafts_id = find_mailbox("drafts").unwrap_or_default();
-                        spawn(async move {
-                            let to_addrs: Vec<String> = cs.to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-                            let cc_addrs: Vec<String> = cs.cc.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-                            match c.send_compose(
-                                JMAP_USER,
-                                &to_addrs,
-                                &cc_addrs,
-                                &cs.subject,
-                                &cs.body,
-                                cs.in_reply_to.as_deref(),
-                                &drafts_id,
-                            ).await {
-                                Ok(()) => {
-                                    compose.set(None);
-                                    refresh.set(refresh() + 1);
+                    on_send: move |_cs: ComposeState| {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        {
+                            let c = client.peek().clone();
+                            let drafts_id = find_mailbox("drafts").unwrap_or_default();
+                            let cs = _cs;
+                            spawn(async move {
+                                let to_addrs: Vec<String> = cs.to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                                let cc_addrs: Vec<String> = cs.cc.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                                match c.send_compose(
+                                    JMAP_USER,
+                                    &to_addrs,
+                                    &cc_addrs,
+                                    &cs.subject,
+                                    &cs.body,
+                                    cs.in_reply_to.as_deref(),
+                                    &drafts_id,
+                                ).await {
+                                    Ok(()) => {
+                                        compose.set(None);
+                                        refresh.set(refresh() + 1);
+                                    }
+                                    Err(e) => error_msg.set(Some(format!("Send failed: {e}"))),
                                 }
-                                Err(e) => error_msg.set(Some(format!("Send failed: {e}"))),
-                            }
-                        });
+                            });
+                        }
+                        #[cfg(target_arch = "wasm32")]
+                        error_msg.set(Some("Send not yet supported in web mode".into()));
                     },
                     on_discard: move |_| {
                         compose.set(None);

@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+#[cfg(not(target_arch = "wasm32"))]
 use mail_builder::MessageBuilder;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -165,9 +166,12 @@ pub struct JmapClient {
 
 impl JmapClient {
     pub fn new(base_url: &str, email: &str, password: &str) -> Result<Self> {
+        #[cfg(not(target_arch = "wasm32"))]
         let http = Client::builder()
             .danger_accept_invalid_certs(true)
             .build()?;
+        #[cfg(target_arch = "wasm32")]
+        let http = Client::new();
         Ok(Self {
             http,
             base_url: base_url.trim_end_matches('/').to_string(),
@@ -385,6 +389,7 @@ impl JmapClient {
     }
 
     /// High-level compose + send: build MIME → upload blob → create email → submit.
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn send_compose(
         &self,
         from: &str,
