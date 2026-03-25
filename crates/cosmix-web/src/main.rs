@@ -46,6 +46,14 @@ enum Command {
         /// Upstream JMAP server to reverse-proxy to
         #[arg(long, default_value = "http://127.0.0.1:8080")]
         jmap_upstream: String,
+
+        /// TLS certificate file (PEM). Enables HTTPS when set.
+        #[arg(long)]
+        tls_cert: Option<PathBuf>,
+
+        /// TLS private key file (PEM)
+        #[arg(long)]
+        tls_key: Option<PathBuf>,
     },
     /// Initialise the SQLite database
     Init {
@@ -447,7 +455,13 @@ async fn main() -> Result<()> {
             www_dir,
             db_path,
             jmap_upstream,
+            tls_cert,
+            tls_key,
         } => {
+            rustls::crypto::ring::default_provider()
+                .install_default()
+                .expect("Failed to install rustls crypto provider");
+
             // Ensure DB exists and schema is applied
             if let Some(parent) = db_path.parent() {
                 std::fs::create_dir_all(parent)?;
@@ -463,11 +477,48 @@ async fn main() -> Result<()> {
                     .build()?,
             });
 
-            let router = build_router(state, www_dir);
-
+            let app = build_router(state, www_dir);
             let listener = tokio::net::TcpListener::bind(&listen).await?;
-            info!("cosmix-web listening on {listen}");
-            axum::serve(listener, router).await?;
+
+            if let (Some(cert_path), Some(key_path)) = (&tls_cert, &tls_key) {
+                let cert_data = std::fs::read(cert_path)?;
+                let key_data = std::fs::read(key_path)?;
+                let certs: Vec<_> = rustls_pemfile::certs(&mut &cert_data[..])
+                    .filter_map(|r| r.ok())
+                    .collect();
+                let key = rustls_pemfile::private_key(&mut &key_data[..])
+                    .ok()
+                    .flatten()
+                    .ok_or_else(|| anyhow::anyhow!("No private key found"))?;
+                let tls_config = rustls::ServerConfig::builder()
+                    .with_no_client_auth()
+                    .with_single_cert(certs, key)?;
+                let tls_acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls_config));
+
+                info!("cosmix-web listening on {listen} (HTTPS)");
+                loop {
+                    let (stream, _) = listener.accept().await?;
+                    let acceptor = tls_acceptor.clone();
+                    let app = app.clone();
+                    tokio::spawn(async move {
+                        match acceptor.accept(stream).await {
+                            Ok(tls_stream) => {
+                                let io = hyper_util::rt::TokioIo::new(tls_stream);
+                                let svc = hyper_util::service::TowerToHyperService::new(app);
+                                let _ = hyper_util::server::conn::auto::Builder::new(
+                                    hyper_util::rt::TokioExecutor::new(),
+                                )
+                                .serve_connection(io, svc)
+                                .await;
+                            }
+                            Err(e) => tracing::debug!(error = %e, "TLS handshake failed"),
+                        }
+                    });
+                }
+            } else {
+                info!("cosmix-web listening on {listen}");
+                axum::serve(listener, app).await?;
+            }
         }
     }
 
