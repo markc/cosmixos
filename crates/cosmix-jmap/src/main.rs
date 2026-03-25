@@ -189,11 +189,17 @@ async fn main() -> Result<()> {
                 spam_filter,
             });
 
+            let cors = tower_http::cors::CorsLayer::new()
+                .allow_origin(tower_http::cors::Any)
+                .allow_methods(tower_http::cors::Any)
+                .allow_headers(tower_http::cors::Any);
+
             let app = Router::new()
                 .route("/.well-known/jmap", axum::routing::get(jmap::session))
                 .route("/jmap", axum::routing::post(jmap::api))
                 .route("/jmap/blob/{blobId}", axum::routing::get(jmap::blob_download))
                 .route("/jmap/upload/{accountId}", axum::routing::post(jmap::blob_upload))
+                .layer(cors)
                 .with_state(state);
 
             let listener = tokio::net::TcpListener::bind(&cfg.listen).await?;
