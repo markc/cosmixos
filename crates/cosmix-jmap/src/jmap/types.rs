@@ -6,6 +6,7 @@ use std::collections::HashMap;
 /// Top-level JMAP request (RFC 8620 §3.3).
 #[derive(Debug, Deserialize)]
 pub struct JmapRequest {
+    #[allow(dead_code)]
     pub using: Vec<String>,
     #[serde(rename = "methodCalls")]
     pub method_calls: Vec<MethodCall>,
@@ -147,6 +148,7 @@ impl JmapError {
         }
     }
 
+    #[allow(dead_code)]
     pub fn invalid_arguments(desc: &str) -> Self {
         Self {
             error_type: "invalidArguments".into(),
@@ -154,6 +156,7 @@ impl JmapError {
         }
     }
 
+    #[allow(dead_code)]
     pub fn not_found() -> Self {
         Self {
             error_type: "notFound".into(),

@@ -3,10 +3,9 @@
 use std::net::IpAddr;
 
 use anyhow::Result;
-use mail_auth::{AuthenticatedMessage, DkimResult, MessageAuthenticator, SpfResult};
+use mail_auth::{AuthenticatedMessage, DkimResult, MessageAuthenticator};
 use mail_auth::spf::verify::SpfParameters;
 use mail_parser::{Address, HeaderValue, MessageParser};
-use spamlite::classifier::Verdict;
 
 use super::SmtpState;
 use crate::db;

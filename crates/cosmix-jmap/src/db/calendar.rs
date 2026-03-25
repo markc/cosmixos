@@ -9,6 +9,7 @@ use uuid::Uuid;
 pub struct Calendar {
     pub id: Uuid,
     #[serde(skip)]
+    #[allow(dead_code)]
     pub account_id: i32,
     pub name: String,
     pub color: Option<String>,
@@ -28,6 +29,7 @@ pub struct CalendarEvent {
     #[serde(rename = "calendarId")]
     pub calendar_id: Uuid,
     #[serde(skip)]
+    #[allow(dead_code)]
     pub account_id: i32,
     pub uid: String,
     /// Full JSCalendar Event object

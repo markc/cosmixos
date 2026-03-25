@@ -126,7 +126,7 @@ async fn generate_bounce(state: &SmtpState, from: &str, to: &[String], error: &s
     }
 
     let account = db::account::get_by_email(&state.db.pool, from).await?;
-    if let Some(account) = account {
+    if let Some(_account) = account {
         let ndr = bounce::generate_ndr(&state.config.hostname, from, to, error)?;
         super::inbound::deliver(
             state,
@@ -198,7 +198,7 @@ async fn try_deliver(
     recipients: &[&String],
     data: &[u8],
 ) -> Result<()> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
+    use tokio::io::BufReader;
     use tokio::net::TcpStream;
 
     let addr = format!("{host}:{port}");
@@ -390,6 +390,7 @@ fn dkim_sign(state: &SmtpState, data: &[u8]) -> Option<Vec<u8>> {
         }
     };
 
+    #[allow(deprecated)]
     let pk = match RsaKey::from_pkcs8_pem(&key_pem)
         .or_else(|_| RsaKey::from_rsa_pem(&key_pem))
     {

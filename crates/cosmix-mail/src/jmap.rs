@@ -131,7 +131,9 @@ impl Email {
 #[derive(Deserialize, Debug)]
 pub struct GetResponse<T> {
     #[serde(rename = "accountId")]
+    #[allow(dead_code)]
     pub account_id: String,
+    #[allow(dead_code)]
     pub state: String,
     pub list: Vec<T>,
 }
@@ -139,6 +141,7 @@ pub struct GetResponse<T> {
 #[derive(Deserialize, Debug)]
 pub struct QueryResponse {
     pub ids: Vec<String>,
+    #[allow(dead_code)]
     pub total: Option<u64>,
 }
 
@@ -146,6 +149,7 @@ pub struct QueryResponse {
 pub struct BlobUploadResponse {
     #[serde(rename = "blobId")]
     pub blob_id: String,
+    #[allow(dead_code)]
     pub size: u64,
 }
 

@@ -1,6 +1,6 @@
 //! Spam filtering via spamlite — per-user Bayesian classification.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::Result;
 use spamlite::classifier::{self, Params, Verdict};

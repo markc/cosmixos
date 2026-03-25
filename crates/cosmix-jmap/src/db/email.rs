@@ -9,6 +9,7 @@ use uuid::Uuid;
 pub struct Email {
     pub id: Uuid,
     #[serde(skip)]
+    #[allow(dead_code)]
     pub account_id: i32,
     #[serde(rename = "threadId")]
     pub thread_id: Uuid,

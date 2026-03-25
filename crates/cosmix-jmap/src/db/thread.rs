@@ -8,7 +8,7 @@ use uuid::Uuid;
 pub async fn find_or_create(
     pool: &PgPool,
     account_id: i32,
-    message_id: Option<&str>,
+    _message_id: Option<&str>,
     in_reply_to: Option<&[String]>,
 ) -> Result<Uuid> {
     // Try to find an existing thread by in-reply-to

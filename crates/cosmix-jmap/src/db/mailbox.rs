@@ -9,6 +9,7 @@ use uuid::Uuid;
 pub struct Mailbox {
     pub id: Uuid,
     #[serde(skip)]
+    #[allow(dead_code)]
     pub account_id: i32,
     pub name: String,
     #[serde(rename = "parentId")]

@@ -9,6 +9,7 @@ pub struct Account {
     pub email: String,
     pub password: String,
     pub name: Option<String>,
+    #[allow(dead_code)]
     pub quota: i64,
     pub spam_enabled: bool,
     pub spam_threshold: f64,

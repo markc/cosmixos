@@ -9,6 +9,7 @@ use uuid::Uuid;
 pub struct AddressBook {
     pub id: Uuid,
     #[serde(skip)]
+    #[allow(dead_code)]
     pub account_id: i32,
     pub name: String,
     pub description: Option<String>,
@@ -22,6 +23,7 @@ pub struct Contact {
     #[serde(rename = "addressBookId")]
     pub addressbook_id: Uuid,
     #[serde(skip)]
+    #[allow(dead_code)]
     pub account_id: i32,
     pub uid: String,
     /// Full JSContact Card object
