@@ -100,7 +100,7 @@ async fn main() -> Result<()> {
         }
     };
 
-    let database = db::Db::connect(&cfg.database_url, &cfg.blob_dir).await?;
+    let database = db::Db::connect(&cfg.database_path, &cfg.blob_dir).await?;
 
     match cli.command {
         Command::Migrate => {
@@ -112,11 +112,11 @@ async fn main() -> Result<()> {
             AccountAction::Add { email, password, name } => {
                 let hash = bcrypt::hash(&password, bcrypt::DEFAULT_COST)
                     .map_err(|e| anyhow::anyhow!("bcrypt error: {e}"))?;
-                let id = db::account::create(&database.pool, &email, &hash, name.as_deref()).await?;
+                let id = db::account::create(&database.conn, &email, &hash, name.as_deref()).await?;
                 println!("Created account {email} (id: {id})");
             }
             AccountAction::List => {
-                let accounts = db::account::list(&database.pool).await?;
+                let accounts = db::account::list(&database.conn).await?;
                 if accounts.is_empty() {
                     println!("No accounts.");
                 } else {
@@ -128,7 +128,7 @@ async fn main() -> Result<()> {
                 }
             }
             AccountAction::Delete { email } => {
-                if db::account::delete(&database.pool, &email).await? {
+                if db::account::delete(&database.conn, &email).await? {
                     println!("Deleted account {email}");
                 } else {
                     println!("Account {email} not found");
@@ -138,7 +138,7 @@ async fn main() -> Result<()> {
 
         Command::Queue { action } => match action {
             QueueAction::List => {
-                let entries = smtp::queue::list(&database.pool, 50).await?;
+                let entries = smtp::queue::list(&database.conn, 50).await?;
                 if entries.is_empty() {
                     println!("Queue is empty.");
                 } else {
@@ -150,14 +150,14 @@ async fn main() -> Result<()> {
                             e.id,
                             e.from_addr,
                             e.attempts,
-                            e.next_retry.format("%Y-%m-%d %H:%M:%S"),
+                            e.next_retry,
                             e.last_error.unwrap_or_default()
                         );
                     }
                 }
             }
             QueueAction::Flush => {
-                let count = smtp::queue::flush(&database.pool).await?;
+                let count = smtp::queue::flush(&database.conn).await?;
                 println!("Flushed {count} queue entries for immediate retry.");
             }
         },

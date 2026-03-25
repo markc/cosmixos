@@ -1,100 +1,115 @@
 //! JMAP change tracking (modification sequences).
 
+use std::sync::{Arc, Mutex};
+
 use anyhow::Result;
-use sqlx::PgPool;
+use rusqlite::{Connection, params};
 use uuid::Uuid;
 
 /// Record a change and return the new state (modseq).
 pub async fn record(
-    pool: &PgPool,
+    conn: &Arc<Mutex<Connection>>,
     account_id: i32,
     object_type: &str,
     object_id: Uuid,
     change_type: &str,
 ) -> Result<i64> {
-    let (id,): (i64,) = sqlx::query_as(
-        "INSERT INTO changelog (account_id, object_type, object_id, change_type) \
-         VALUES ($1, $2, $3, $4) RETURNING id",
-    )
-    .bind(account_id)
-    .bind(object_type)
-    .bind(object_id)
-    .bind(change_type)
-    .fetch_one(pool)
-    .await?;
-    Ok(id)
+    let conn = conn.clone();
+    let object_type = object_type.to_string();
+    let object_id_str = object_id.to_string();
+    let change_type = change_type.to_string();
+    tokio::task::spawn_blocking(move || {
+        let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock error: {e}"))?;
+        conn.execute(
+            "INSERT INTO changelog (account_id, object_type, object_id, change_type) \
+             VALUES (?1, ?2, ?3, ?4)",
+            params![account_id, object_type, object_id_str, change_type],
+        )?;
+        let id = conn.last_insert_rowid();
+        Ok(id)
+    }).await?
 }
 
 /// Get the current state (highest modseq) for an object type.
-pub async fn current_state(pool: &PgPool, account_id: i32, object_type: &str) -> Result<String> {
-    let row: Option<(i64,)> = sqlx::query_as(
-        "SELECT COALESCE(MAX(id), 0) FROM changelog WHERE account_id = $1 AND object_type = $2",
-    )
-    .bind(account_id)
-    .bind(object_type)
-    .fetch_optional(pool)
-    .await?;
-    Ok(row.map(|r| r.0.to_string()).unwrap_or_else(|| "0".into()))
+pub async fn current_state(conn: &Arc<Mutex<Connection>>, account_id: i32, object_type: &str) -> Result<String> {
+    let conn = conn.clone();
+    let object_type = object_type.to_string();
+    tokio::task::spawn_blocking(move || {
+        let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock error: {e}"))?;
+        let id: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(id), 0) FROM changelog WHERE account_id = ?1 AND object_type = ?2",
+            params![account_id, object_type],
+            |row| row.get(0),
+        )?;
+        Ok(id.to_string())
+    }).await?
 }
 
 /// Get changes since a given state.
 pub async fn changes_since(
-    pool: &PgPool,
+    conn: &Arc<Mutex<Connection>>,
     account_id: i32,
     object_type: &str,
     since_state: i64,
     max_changes: i64,
 ) -> Result<ChangesResult> {
-    let rows = sqlx::query_as::<_, ChangeRow>(
-        "SELECT object_id, change_type, id FROM changelog \
-         WHERE account_id = $1 AND object_type = $2 AND id > $3 \
-         ORDER BY id LIMIT $4",
-    )
-    .bind(account_id)
-    .bind(object_type)
-    .bind(since_state)
-    .bind(max_changes + 1)
-    .fetch_all(pool)
-    .await?;
+    let conn = conn.clone();
+    let object_type = object_type.to_string();
+    tokio::task::spawn_blocking(move || {
+        let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock error: {e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT object_id, change_type, id FROM changelog \
+             WHERE account_id = ?1 AND object_type = ?2 AND id > ?3 \
+             ORDER BY id LIMIT ?4"
+        )?;
+        let rows = stmt.query_map(
+            params![account_id, object_type, since_state, max_changes + 1],
+            |row| {
+                Ok(ChangeRow {
+                    object_id: row.get(0)?,
+                    change_type: row.get(1)?,
+                    id: row.get(2)?,
+                })
+            },
+        )?;
 
-    let has_more = rows.len() as i64 > max_changes;
-    let rows: Vec<ChangeRow> = rows.into_iter().take(max_changes as usize).collect();
-    let new_state = rows.last().map(|r| r.id).unwrap_or(since_state);
+        let all_rows: Vec<ChangeRow> = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        let has_more = all_rows.len() as i64 > max_changes;
+        let rows: Vec<ChangeRow> = all_rows.into_iter().take(max_changes as usize).collect();
+        let new_state = rows.last().map(|r| r.id).unwrap_or(since_state);
 
-    let mut created = Vec::new();
-    let mut updated = Vec::new();
-    let mut destroyed = Vec::new();
-
-    // Deduplicate: if an object was created then updated, only report created.
-    // If created then destroyed, report neither.
-    use std::collections::HashMap;
-    let mut seen: HashMap<Uuid, String> = HashMap::new();
-    for row in &rows {
-        seen.insert(row.object_id, row.change_type.clone());
-    }
-
-    for (id, change) in seen {
-        let id_str = id.to_string();
-        match change.as_str() {
-            "created" => created.push(id_str),
-            "updated" => updated.push(id_str),
-            "destroyed" => destroyed.push(id_str),
-            _ => {}
+        // Deduplicate
+        use std::collections::HashMap;
+        let mut seen: HashMap<String, String> = HashMap::new();
+        for row in &rows {
+            seen.insert(row.object_id.clone(), row.change_type.clone());
         }
-    }
 
-    Ok(ChangesResult {
-        new_state: new_state.to_string(),
-        has_more_changes: has_more,
-        created,
-        updated,
-        destroyed,
-    })
+        let mut created = Vec::new();
+        let mut updated = Vec::new();
+        let mut destroyed = Vec::new();
+
+        for (id, change) in seen {
+            match change.as_str() {
+                "created" => created.push(id),
+                "updated" => updated.push(id),
+                "destroyed" => destroyed.push(id),
+                _ => {}
+            }
+        }
+
+        Ok(ChangesResult {
+            new_state: new_state.to_string(),
+            has_more_changes: has_more,
+            created,
+            updated,
+            destroyed,
+        })
+    }).await?
 }
 
-#[derive(Debug, sqlx::FromRow)]
 struct ChangeRow {
-    object_id: Uuid,
+    object_id: String,
     change_type: String,
     id: i64,
 }

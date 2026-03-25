@@ -44,15 +44,15 @@ pub async fn delivery_worker(state: Arc<SmtpState>) {
 
 /// Process all ready queue entries.
 async fn process_queue(state: &SmtpState, resolver: &TokioResolver) -> Result<usize> {
-    let entries = queue::fetch_ready(&state.db.pool, 50).await?;
+    let entries = queue::fetch_ready(&state.db.conn, 50).await?;
     let mut delivered = 0;
 
     for entry in entries {
         // Load blob data
-        let data = db::blob::load(&state.db.pool, &state.db.blob_dir, entry.blob_id).await?;
+        let data = db::blob::load(&state.db.conn, &state.db.blob_dir, entry.blob_id).await?;
         let Some(data) = data else {
             tracing::error!(queue_id = entry.id, "Blob not found for queue entry");
-            queue::mark_permanent_failure(&state.db.pool, entry.id, "blob not found").await?;
+            queue::mark_permanent_failure(&state.db.conn, entry.id, "blob not found").await?;
             continue;
         };
 
@@ -94,7 +94,7 @@ async fn process_queue(state: &SmtpState, resolver: &TokioResolver) -> Result<us
                     all_ok = false;
                     if entry.attempts >= 9 {
                         queue::mark_permanent_failure(
-                            &state.db.pool,
+                            &state.db.conn,
                             entry.id,
                             &e.to_string(),
                         ).await?;
@@ -104,14 +104,14 @@ async fn process_queue(state: &SmtpState, resolver: &TokioResolver) -> Result<us
                             tracing::warn!(error = %be, "Failed to generate bounce");
                         }
                     } else {
-                        queue::mark_failed(&state.db.pool, entry.id, &e.to_string()).await?;
+                        queue::mark_failed(&state.db.conn, entry.id, &e.to_string()).await?;
                     }
                 }
             }
         }
 
         if all_ok {
-            queue::mark_delivered(&state.db.pool, entry.id).await?;
+            queue::mark_delivered(&state.db.conn, entry.id).await?;
             delivered += 1;
         }
     }
@@ -125,7 +125,7 @@ async fn generate_bounce(state: &SmtpState, from: &str, to: &[String], error: &s
         return Ok(()); // Don't bounce bounces (null sender)
     }
 
-    let account = db::account::get_by_email(&state.db.pool, from).await?;
+    let account = db::account::get_by_email(&state.db.conn, from).await?;
     if let Some(_account) = account {
         let ndr = bounce::generate_ndr(&state.config.hostname, from, to, error)?;
         super::inbound::deliver(

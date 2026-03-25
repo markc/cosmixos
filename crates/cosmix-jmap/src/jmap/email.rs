@@ -20,21 +20,23 @@ pub async fn get(db: &Db, account_id: i32, args: serde_json::Value) -> Result<se
 
     let emails = if let Some(ids) = ids {
         let uuids: Vec<Uuid> = ids.iter().filter_map(|s| s.parse().ok()).collect();
-        db::email::get_by_ids(&db.pool, account_id, &uuids).await?
+        db::email::get_by_ids(&db.conn, account_id, &uuids).await?
     } else {
-        let (ids, _) = db::email::query_ids(&db.pool, account_id, None, true, 0, 100).await?;
-        db::email::get_by_ids(&db.pool, account_id, &ids).await?
+        let (ids, _) = db::email::query_ids(&db.conn, account_id, None, true, 0, 100).await?;
+        db::email::get_by_ids(&db.conn, account_id, &ids).await?
     };
 
-    let state = db::changelog::current_state(&db.pool, account_id, "Email").await?;
+    let state = db::changelog::current_state(&db.conn, account_id, "Email").await?;
 
     // If body values requested, load blobs and parse MIME
     let list: Vec<serde_json::Value> = if fetch_text || fetch_html {
         let mut result = Vec::new();
         for email in &emails {
             let mut val = serde_json::to_value(email)?;
-            if let Ok(Some(blob_data)) = db::blob::load(&db.pool, &db.blob_dir, email.blob_id).await {
-                add_body_parts(&mut val, &blob_data, fetch_text, fetch_html);
+            if let Ok(blob_uuid) = email.blob_id.parse::<uuid::Uuid>() {
+                if let Ok(Some(blob_data)) = db::blob::load(&db.conn, &db.blob_dir, blob_uuid).await {
+                    add_body_parts(&mut val, &blob_data, fetch_text, fetch_html);
+                }
             }
             result.push(val);
         }
@@ -133,8 +135,8 @@ pub async fn query(db: &Db, account_id: i32, args: serde_json::Value) -> Result<
     let position = args.get("position").and_then(|v| v.as_u64()).unwrap_or(0) as i64;
     let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as i64;
 
-    let (ids, total) = db::email::query_ids(&db.pool, account_id, mailbox_id, true, position, limit).await?;
-    let state = db::changelog::current_state(&db.pool, account_id, "Email").await?;
+    let (ids, total) = db::email::query_ids(&db.conn, account_id, mailbox_id, true, position, limit).await?;
+    let state = db::changelog::current_state(&db.conn, account_id, "Email").await?;
 
     let resp = QueryResponse {
         account_id: acct,
@@ -156,7 +158,7 @@ pub async fn set(
     spam_filter: &SpamFilter,
 ) -> Result<serde_json::Value> {
     let acct = account_id.to_string();
-    let old_state = db::changelog::current_state(&db.pool, account_id, "Email").await?;
+    let old_state = db::changelog::current_state(&db.conn, account_id, "Email").await?;
 
     let mut created_map = std::collections::HashMap::new();
     let mut not_created = std::collections::HashMap::new();
@@ -170,7 +172,7 @@ pub async fn set(
         for (client_id, entry) in create {
             match create_from_blob(db, account_id, entry).await {
                 Ok(email_id) => {
-                    db::changelog::record(&db.pool, account_id, "Email", email_id, "created").await?;
+                    db::changelog::record(&db.conn, account_id, "Email", email_id, "created").await?;
                     created_map.insert(client_id.clone(), serde_json::json!({ "id": email_id.to_string() }));
                 }
                 Err(e) => {
@@ -184,7 +186,7 @@ pub async fn set(
     }
 
     // Look up the Junk mailbox ID for spam retraining
-    let junk_id = db::mailbox::get_by_role(&db.pool, account_id, "junk").await?;
+    let junk_id = db::mailbox::get_by_role(&db.conn, account_id, "junk").await?;
 
     // Handle updates (keywords, mailboxIds)
     if let Some(update) = args.get("update").and_then(|v| v.as_object()) {
@@ -200,7 +202,7 @@ pub async fn set(
             let mut changed = false;
 
             if let Some(keywords) = patch.get("keywords") {
-                if db::email::update_keywords(&db.pool, account_id, id, keywords).await? {
+                if db::email::update_keywords(&db.conn, account_id, id, keywords).await? {
                     changed = true;
                 }
             }
@@ -214,14 +216,14 @@ pub async fn set(
                     // Get old mailbox_ids + blob_id for retraining
                     if let Some(junk_id) = junk_id {
                         if let Ok(Some((old_mboxes, blob_id))) =
-                            db::email::get_mailbox_and_blob(&db.pool, account_id, id).await
+                            db::email::get_mailbox_and_blob(&db.conn, account_id, id).await
                         {
                             let was_in_junk = old_mboxes.contains(&junk_id);
                             let now_in_junk = new_mbox_uuids.contains(&junk_id);
 
                             if was_in_junk != now_in_junk {
                                 // Retrain spamlite based on folder move
-                                if let Ok(Some(blob_data)) = db::blob::load(&db.pool, &db.blob_dir, blob_id).await {
+                                if let Ok(Some(blob_data)) = db::blob::load(&db.conn, &db.blob_dir, blob_id).await {
                                     if !was_in_junk && now_in_junk {
                                         // Moved TO Junk → train as spam
                                         if let Err(e) = spam_filter.train_spam(account_id, &blob_data) {
@@ -238,14 +240,14 @@ pub async fn set(
                         }
                     }
 
-                    if db::email::update_mailboxes(&db.pool, account_id, id, &new_mbox_uuids).await? {
+                    if db::email::update_mailboxes(&db.conn, account_id, id, &new_mbox_uuids).await? {
                         changed = true;
                     }
                 }
             }
 
             if changed {
-                db::changelog::record(&db.pool, account_id, "Email", id, "updated").await?;
+                db::changelog::record(&db.conn, account_id, "Email", id, "updated").await?;
                 updated_map.insert(id_str.clone(), serde_json::Value::Null);
             }
         }
@@ -263,8 +265,8 @@ pub async fn set(
                 continue;
             };
 
-            if db::email::delete(&db.pool, account_id, id).await? {
-                db::changelog::record(&db.pool, account_id, "Email", id, "destroyed").await?;
+            if db::email::delete(&db.conn, account_id, id).await? {
+                db::changelog::record(&db.conn, account_id, "Email", id, "destroyed").await?;
                 destroyed_list.push(id_str.to_string());
             } else {
                 not_destroyed.insert(id_str.to_string(), SetError {
@@ -275,7 +277,7 @@ pub async fn set(
         }
     }
 
-    let new_state = db::changelog::current_state(&db.pool, account_id, "Email").await?;
+    let new_state = db::changelog::current_state(&db.conn, account_id, "Email").await?;
 
     let resp = SetResponse {
         account_id: acct,
@@ -320,7 +322,7 @@ async fn create_from_blob(
     }
 
     // Load blob data
-    let blob_data = db::blob::load(&db.pool, &db.blob_dir, blob_id).await?
+    let blob_data = db::blob::load(&db.conn, &db.blob_dir, blob_id).await?
         .ok_or_else(|| anyhow::anyhow!("Blob not found: {blob_id}"))?;
 
     // Parse MIME message (same pattern as smtp/inbound.rs)
@@ -349,7 +351,7 @@ async fn create_from_blob(
 
     // Find or create thread
     let thread_id = db::thread::find_or_create(
-        &db.pool,
+        &db.conn,
         account_id,
         message_id.as_deref(),
         in_reply_to.as_deref(),
@@ -360,7 +362,7 @@ async fn create_from_blob(
 
     // Create email record
     let email_id = db::email::create(
-        &db.pool,
+        &db.conn,
         account_id,
         thread_id,
         &mailbox_ids,
@@ -381,7 +383,7 @@ async fn create_from_blob(
 
     // Apply keywords if provided
     if let Some(keywords) = keywords {
-        db::email::update_keywords(&db.pool, account_id, email_id, keywords).await?;
+        db::email::update_keywords(&db.conn, account_id, email_id, keywords).await?;
     }
 
     Ok(email_id)
@@ -429,7 +431,7 @@ pub async fn changes(db: &Db, account_id: i32, args: serde_json::Value) -> Resul
 
     let max = args.get("maxChanges").and_then(|v| v.as_i64()).unwrap_or(500);
 
-    let result = db::changelog::changes_since(&db.pool, account_id, "Email", since_state, max).await?;
+    let result = db::changelog::changes_since(&db.conn, account_id, "Email", since_state, max).await?;
 
     let resp = ChangesResponse {
         account_id: acct,

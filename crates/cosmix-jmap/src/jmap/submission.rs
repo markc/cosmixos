@@ -10,7 +10,7 @@ use super::types::*;
 /// EmailSubmission/set — queue messages for outbound delivery.
 pub async fn set(db: &Db, account_id: i32, args: serde_json::Value) -> Result<serde_json::Value> {
     let acct = account_id.to_string();
-    let old_state = db::changelog::current_state(&db.pool, account_id, "EmailSubmission").await?;
+    let old_state = db::changelog::current_state(&db.conn, account_id, "EmailSubmission").await?;
 
     let mut created_map = std::collections::HashMap::new();
 
@@ -32,7 +32,7 @@ pub async fn set(db: &Db, account_id: i32, args: serde_json::Value) -> Result<se
         }
     }
 
-    let new_state = db::changelog::current_state(&db.pool, account_id, "EmailSubmission").await?;
+    let new_state = db::changelog::current_state(&db.conn, account_id, "EmailSubmission").await?;
 
     let resp = SetResponse {
         account_id: acct,
@@ -77,7 +77,7 @@ async fn create_submission(db: &Db, account_id: i32, obj: &serde_json::Value) ->
     let email_uuid: Uuid = sub.email_id.parse()?;
 
     // Load the email record
-    let emails = db::email::get_by_ids(&db.pool, account_id, &[email_uuid]).await?;
+    let emails = db::email::get_by_ids(&db.conn, account_id, &[email_uuid]).await?;
     let email = emails.into_iter().next()
         .ok_or_else(|| anyhow::anyhow!("Email not found: {}", sub.email_id))?;
 
@@ -114,12 +114,13 @@ async fn create_submission(db: &Db, account_id: i32, obj: &serde_json::Value) ->
         anyhow::bail!("No recipients");
     }
 
-    // Queue for delivery
-    let queue_id = crate::smtp::queue::enqueue(&db.pool, &from_addr, &to_addrs, email.blob_id).await?;
+    // Queue for delivery — blob_id is now a String, parse to Uuid
+    let blob_uuid: Uuid = email.blob_id.parse()?;
+    let queue_id = crate::smtp::queue::enqueue(&db.conn, &from_addr, &to_addrs, blob_uuid).await?;
 
     // Move to Sent mailbox if one exists
-    if let Ok(Some(sent_id)) = db::mailbox::get_by_role(&db.pool, account_id, "sent").await {
-        let _ = db::email::update_mailboxes(&db.pool, account_id, email_uuid, &[sent_id]).await;
+    if let Ok(Some(sent_id)) = db::mailbox::get_by_role(&db.conn, account_id, "sent").await {
+        let _ = db::email::update_mailboxes(&db.conn, account_id, email_uuid, &[sent_id]).await;
     }
 
     // Generate a submission ID from the queue ID
@@ -140,12 +141,7 @@ pub async fn identity_get(db: &Db, account_id: i32, _args: serde_json::Value) ->
     let acct = account_id.to_string();
 
     // For now, create an identity from the account's email
-    let account = sqlx::query_as::<_, db::account::Account>(
-        "SELECT id, email, password, name, quota FROM accounts WHERE id = $1",
-    )
-    .bind(account_id)
-    .fetch_optional(&db.pool)
-    .await?;
+    let account = db::account::get_by_id(&db.conn, account_id).await?;
 
     let list = if let Some(a) = account {
         vec![serde_json::json!({

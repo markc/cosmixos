@@ -11,8 +11,8 @@ pub struct Config {
     pub listen: String,
     /// Public base URL for JMAP
     pub base_url: String,
-    /// PostgreSQL connection URL
-    pub database_url: String,
+    /// SQLite database file path
+    pub database_path: String,
     /// Blob storage directory
     pub blob_dir: String,
     /// Server hostname (used in SMTP EHLO and DKIM)
@@ -48,7 +48,7 @@ impl Default for Config {
         Self {
             listen: "127.0.0.1:8088".into(),
             base_url: "http://127.0.0.1:8088".into(),
-            database_url: "postgres://localhost/cosmix_jmap".into(),
+            database_path: default_db_path(),
             blob_dir: default_blob_dir(),
             hostname: "localhost".into(),
             smtp_inbound: Some("0.0.0.0:2525".into()),
@@ -63,6 +63,12 @@ impl Default for Config {
             spam_baseline_db: None,
         }
     }
+}
+
+fn default_db_path() -> String {
+    directories::BaseDirs::new()
+        .map(|d| d.data_dir().join("cosmix-jmap").join("mail.db").to_string_lossy().into_owned())
+        .unwrap_or_else(|| "/var/lib/cosmix-jmap/mail.db".into())
 }
 
 fn default_blob_dir() -> String {

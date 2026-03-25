@@ -25,7 +25,7 @@ pub async fn authenticate(db: &Db, headers: &axum::http::HeaderMap) -> Option<i3
 
 /// Verify email + password against the accounts table using bcrypt.
 pub async fn verify(db: &Db, email: &str, password: &str) -> Result<Option<i32>> {
-    let account = db::account::get_by_email(&db.pool, email).await?;
+    let account = db::account::get_by_email(&db.conn, email).await?;
     match account {
         Some(a) => {
             let hash = a.password.clone();

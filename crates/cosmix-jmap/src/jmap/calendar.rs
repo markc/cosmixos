@@ -14,12 +14,12 @@ pub async fn get(db: &Db, account_id: i32, args: serde_json::Value) -> Result<se
 
     let calendars = if let Some(ids) = ids {
         let uuids: Vec<Uuid> = ids.iter().filter_map(|s| s.parse().ok()).collect();
-        db::calendar::get_by_ids(&db.pool, account_id, &uuids).await?
+        db::calendar::get_by_ids(&db.conn, account_id, &uuids).await?
     } else {
-        db::calendar::get_all(&db.pool, account_id).await?
+        db::calendar::get_all(&db.conn, account_id).await?
     };
 
-    let state = db::changelog::current_state(&db.pool, account_id, "Calendar").await?;
+    let state = db::changelog::current_state(&db.conn, account_id, "Calendar").await?;
     let resp = GetResponse {
         account_id: acct,
         state,
@@ -32,8 +32,8 @@ pub async fn get(db: &Db, account_id: i32, args: serde_json::Value) -> Result<se
 /// Calendar/query
 pub async fn query(db: &Db, account_id: i32, _args: serde_json::Value) -> Result<serde_json::Value> {
     let acct = account_id.to_string();
-    let ids = db::calendar::query_calendar_ids(&db.pool, account_id).await?;
-    let state = db::changelog::current_state(&db.pool, account_id, "Calendar").await?;
+    let ids = db::calendar::query_calendar_ids(&db.conn, account_id).await?;
+    let state = db::changelog::current_state(&db.conn, account_id, "Calendar").await?;
     let total = ids.len() as u64;
     let resp = QueryResponse {
         account_id: acct,
@@ -49,7 +49,7 @@ pub async fn query(db: &Db, account_id: i32, _args: serde_json::Value) -> Result
 /// Calendar/set
 pub async fn set(db: &Db, account_id: i32, args: serde_json::Value) -> Result<serde_json::Value> {
     let acct = account_id.to_string();
-    let old_state = db::changelog::current_state(&db.pool, account_id, "Calendar").await?;
+    let old_state = db::changelog::current_state(&db.conn, account_id, "Calendar").await?;
 
     let mut created_map = std::collections::HashMap::new();
     let mut updated_map = std::collections::HashMap::new();
@@ -62,9 +62,9 @@ pub async fn set(db: &Db, account_id: i32, args: serde_json::Value) -> Result<se
             let description = obj.get("description").and_then(|v| v.as_str());
             let timezone = obj.get("timezone").and_then(|v| v.as_str());
 
-            match db::calendar::create_calendar(&db.pool, account_id, name, color, description, timezone).await {
+            match db::calendar::create_calendar(&db.conn, account_id, name, color, description, timezone).await {
                 Ok(id) => {
-                    db::changelog::record(&db.pool, account_id, "Calendar", id, "created").await?;
+                    db::changelog::record(&db.conn, account_id, "Calendar", id, "created").await?;
                     created_map.insert(client_id.clone(), serde_json::json!({ "id": id.to_string() }));
                 }
                 Err(e) => tracing::warn!(error = %e, "Calendar create failed"),
@@ -75,8 +75,8 @@ pub async fn set(db: &Db, account_id: i32, args: serde_json::Value) -> Result<se
     if let Some(update) = args.get("update").and_then(|v| v.as_object()) {
         for (id_str, patch) in update {
             let Ok(id) = id_str.parse::<Uuid>() else { continue };
-            if db::calendar::update_calendar(&db.pool, account_id, id, patch).await? {
-                db::changelog::record(&db.pool, account_id, "Calendar", id, "updated").await?;
+            if db::calendar::update_calendar(&db.conn, account_id, id, patch).await? {
+                db::changelog::record(&db.conn, account_id, "Calendar", id, "updated").await?;
                 updated_map.insert(id_str.clone(), serde_json::Value::Null);
             }
         }
@@ -86,14 +86,14 @@ pub async fn set(db: &Db, account_id: i32, args: serde_json::Value) -> Result<se
         for id_val in destroy {
             let Some(id_str) = id_val.as_str() else { continue };
             let Ok(id) = id_str.parse::<Uuid>() else { continue };
-            if db::calendar::delete_calendar(&db.pool, account_id, id).await? {
-                db::changelog::record(&db.pool, account_id, "Calendar", id, "destroyed").await?;
+            if db::calendar::delete_calendar(&db.conn, account_id, id).await? {
+                db::changelog::record(&db.conn, account_id, "Calendar", id, "destroyed").await?;
                 destroyed_list.push(id_str.to_string());
             }
         }
     }
 
-    let new_state = db::changelog::current_state(&db.pool, account_id, "Calendar").await?;
+    let new_state = db::changelog::current_state(&db.conn, account_id, "Calendar").await?;
     let resp = SetResponse {
         account_id: acct,
         old_state, new_state,
@@ -111,7 +111,7 @@ pub async fn changes(db: &Db, account_id: i32, args: serde_json::Value) -> Resul
     let since_state = args.get("sinceState").and_then(|v| v.as_str())
         .and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
     let max = args.get("maxChanges").and_then(|v| v.as_i64()).unwrap_or(500);
-    let result = db::changelog::changes_since(&db.pool, account_id, "Calendar", since_state, max).await?;
+    let result = db::changelog::changes_since(&db.conn, account_id, "Calendar", since_state, max).await?;
     let resp = ChangesResponse {
         account_id: acct,
         old_state: since_state.to_string(),
@@ -130,12 +130,12 @@ pub async fn event_get(db: &Db, account_id: i32, args: serde_json::Value) -> Res
 
     let events = if let Some(ids) = ids {
         let uuids: Vec<Uuid> = ids.iter().filter_map(|s| s.parse().ok()).collect();
-        db::calendar::get_events_by_ids(&db.pool, account_id, &uuids).await?
+        db::calendar::get_events_by_ids(&db.conn, account_id, &uuids).await?
     } else {
-        db::calendar::get_all_events(&db.pool, account_id, 100).await?
+        db::calendar::get_all_events(&db.conn, account_id, 100).await?
     };
 
-    let state = db::changelog::current_state(&db.pool, account_id, "CalendarEvent").await?;
+    let state = db::changelog::current_state(&db.conn, account_id, "CalendarEvent").await?;
     let resp = GetResponse {
         account_id: acct,
         state,
@@ -164,8 +164,8 @@ pub async fn event_query(db: &Db, account_id: i32, args: serde_json::Value) -> R
     let position = args.get("position").and_then(|v| v.as_u64()).unwrap_or(0) as i64;
     let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as i64;
 
-    let (ids, total) = db::calendar::query_event_ids(&db.pool, account_id, calendar_id, after, before, position, limit).await?;
-    let state = db::changelog::current_state(&db.pool, account_id, "CalendarEvent").await?;
+    let (ids, total) = db::calendar::query_event_ids(&db.conn, account_id, calendar_id, after, before, position, limit).await?;
+    let state = db::changelog::current_state(&db.conn, account_id, "CalendarEvent").await?;
     let resp = QueryResponse {
         account_id: acct,
         query_state: state,
@@ -180,7 +180,7 @@ pub async fn event_query(db: &Db, account_id: i32, args: serde_json::Value) -> R
 /// CalendarEvent/set
 pub async fn event_set(db: &Db, account_id: i32, args: serde_json::Value) -> Result<serde_json::Value> {
     let acct = account_id.to_string();
-    let old_state = db::changelog::current_state(&db.pool, account_id, "CalendarEvent").await?;
+    let old_state = db::changelog::current_state(&db.conn, account_id, "CalendarEvent").await?;
 
     let mut created_map = std::collections::HashMap::new();
     let mut updated_map = std::collections::HashMap::new();
@@ -203,9 +203,9 @@ pub async fn event_set(db: &Db, account_id: i32, args: serde_json::Value) -> Res
                 .and_then(|s| s.parse::<chrono::DateTime<chrono::Utc>>().ok());
 
             // The full JSCalendar object is the data
-            match db::calendar::create_event(&db.pool, account_id, calendar_id, &uid, obj, title, start_dt, end_dt).await {
+            match db::calendar::create_event(&db.conn, account_id, calendar_id, &uid, obj, title, start_dt, end_dt).await {
                 Ok(id) => {
-                    db::changelog::record(&db.pool, account_id, "CalendarEvent", id, "created").await?;
+                    db::changelog::record(&db.conn, account_id, "CalendarEvent", id, "created").await?;
                     created_map.insert(client_id.clone(), serde_json::json!({ "id": id.to_string(), "uid": uid }));
                 }
                 Err(e) => tracing::warn!(error = %e, "CalendarEvent create failed"),
@@ -222,8 +222,8 @@ pub async fn event_set(db: &Db, account_id: i32, args: serde_json::Value) -> Res
             let end_dt = patch.get("end").and_then(|v| v.as_str())
                 .and_then(|s| s.parse::<chrono::DateTime<chrono::Utc>>().ok());
 
-            if db::calendar::update_event(&db.pool, account_id, id, patch, title, start_dt, end_dt).await? {
-                db::changelog::record(&db.pool, account_id, "CalendarEvent", id, "updated").await?;
+            if db::calendar::update_event(&db.conn, account_id, id, patch, title, start_dt, end_dt).await? {
+                db::changelog::record(&db.conn, account_id, "CalendarEvent", id, "updated").await?;
                 updated_map.insert(id_str.clone(), serde_json::Value::Null);
             }
         }
@@ -233,14 +233,14 @@ pub async fn event_set(db: &Db, account_id: i32, args: serde_json::Value) -> Res
         for id_val in destroy {
             let Some(id_str) = id_val.as_str() else { continue };
             let Ok(id) = id_str.parse::<Uuid>() else { continue };
-            if db::calendar::delete_event(&db.pool, account_id, id).await? {
-                db::changelog::record(&db.pool, account_id, "CalendarEvent", id, "destroyed").await?;
+            if db::calendar::delete_event(&db.conn, account_id, id).await? {
+                db::changelog::record(&db.conn, account_id, "CalendarEvent", id, "destroyed").await?;
                 destroyed_list.push(id_str.to_string());
             }
         }
     }
 
-    let new_state = db::changelog::current_state(&db.pool, account_id, "CalendarEvent").await?;
+    let new_state = db::changelog::current_state(&db.conn, account_id, "CalendarEvent").await?;
     let resp = SetResponse {
         account_id: acct,
         old_state, new_state,
@@ -258,7 +258,7 @@ pub async fn event_changes(db: &Db, account_id: i32, args: serde_json::Value) ->
     let since_state = args.get("sinceState").and_then(|v| v.as_str())
         .and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
     let max = args.get("maxChanges").and_then(|v| v.as_i64()).unwrap_or(500);
-    let result = db::changelog::changes_since(&db.pool, account_id, "CalendarEvent", since_state, max).await?;
+    let result = db::changelog::changes_since(&db.conn, account_id, "CalendarEvent", since_state, max).await?;
     let resp = ChangesResponse {
         account_id: acct,
         old_state: since_state.to_string(),

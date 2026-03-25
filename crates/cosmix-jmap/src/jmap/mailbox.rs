@@ -15,12 +15,12 @@ pub async fn get(db: &Db, account_id: i32, args: serde_json::Value) -> Result<se
 
     let mailboxes = if let Some(ids) = ids {
         let uuids: Vec<Uuid> = ids.iter().filter_map(|s| s.parse().ok()).collect();
-        db::mailbox::get_by_ids(&db.pool, account_id, &uuids).await?
+        db::mailbox::get_by_ids(&db.conn, account_id, &uuids).await?
     } else {
-        db::mailbox::get_all(&db.pool, account_id).await?
+        db::mailbox::get_all(&db.conn, account_id).await?
     };
 
-    let state = db::changelog::current_state(&db.pool, account_id, "Mailbox").await?;
+    let state = db::changelog::current_state(&db.conn, account_id, "Mailbox").await?;
 
     let resp = GetResponse {
         account_id: acct,
@@ -35,8 +35,8 @@ pub async fn get(db: &Db, account_id: i32, args: serde_json::Value) -> Result<se
 /// Mailbox/query
 pub async fn query(db: &Db, account_id: i32, _args: serde_json::Value) -> Result<serde_json::Value> {
     let acct = account_id.to_string();
-    let ids = db::mailbox::query_ids(&db.pool, account_id).await?;
-    let state = db::changelog::current_state(&db.pool, account_id, "Mailbox").await?;
+    let ids = db::mailbox::query_ids(&db.conn, account_id).await?;
+    let state = db::changelog::current_state(&db.conn, account_id, "Mailbox").await?;
 
     let total = ids.len() as u64;
     let resp = QueryResponse {
@@ -54,7 +54,7 @@ pub async fn query(db: &Db, account_id: i32, _args: serde_json::Value) -> Result
 /// Mailbox/set
 pub async fn set(db: &Db, account_id: i32, args: serde_json::Value) -> Result<serde_json::Value> {
     let acct = account_id.to_string();
-    let old_state = db::changelog::current_state(&db.pool, account_id, "Mailbox").await?;
+    let old_state = db::changelog::current_state(&db.conn, account_id, "Mailbox").await?;
 
     let mut created_map = std::collections::HashMap::new();
     let mut updated_map = std::collections::HashMap::new();
@@ -69,9 +69,9 @@ pub async fn set(db: &Db, account_id: i32, args: serde_json::Value) -> Result<se
                 .and_then(|s| s.parse::<Uuid>().ok());
             let role = obj.get("role").and_then(|v| v.as_str());
 
-            match db::mailbox::create(&db.pool, account_id, name, parent_id, role).await {
+            match db::mailbox::create(&db.conn, account_id, name, parent_id, role).await {
                 Ok(id) => {
-                    db::changelog::record(&db.pool, account_id, "Mailbox", id, "created").await?;
+                    db::changelog::record(&db.conn, account_id, "Mailbox", id, "created").await?;
                     created_map.insert(client_id.clone(), serde_json::json!({ "id": id.to_string() }));
                 }
                 Err(e) => {
@@ -88,8 +88,8 @@ pub async fn set(db: &Db, account_id: i32, args: serde_json::Value) -> Result<se
             let name = patch.get("name").and_then(|v| v.as_str());
             let sort_order = patch.get("sortOrder").and_then(|v| v.as_i64()).map(|v| v as i32);
 
-            if db::mailbox::update(&db.pool, account_id, id, name, None, sort_order).await? {
-                db::changelog::record(&db.pool, account_id, "Mailbox", id, "updated").await?;
+            if db::mailbox::update(&db.conn, account_id, id, name, None, sort_order).await? {
+                db::changelog::record(&db.conn, account_id, "Mailbox", id, "updated").await?;
                 updated_map.insert(id_str.clone(), serde_json::Value::Null);
             }
         }
@@ -100,14 +100,14 @@ pub async fn set(db: &Db, account_id: i32, args: serde_json::Value) -> Result<se
         for id_val in destroy {
             let Some(id_str) = id_val.as_str() else { continue };
             let Ok(id) = id_str.parse::<Uuid>() else { continue };
-            if db::mailbox::delete(&db.pool, account_id, id).await? {
-                db::changelog::record(&db.pool, account_id, "Mailbox", id, "destroyed").await?;
+            if db::mailbox::delete(&db.conn, account_id, id).await? {
+                db::changelog::record(&db.conn, account_id, "Mailbox", id, "destroyed").await?;
                 destroyed_list.push(id_str.to_string());
             }
         }
     }
 
-    let new_state = db::changelog::current_state(&db.pool, account_id, "Mailbox").await?;
+    let new_state = db::changelog::current_state(&db.conn, account_id, "Mailbox").await?;
 
     let resp = SetResponse {
         account_id: acct,
@@ -133,7 +133,7 @@ pub async fn changes(db: &Db, account_id: i32, args: serde_json::Value) -> Resul
         .unwrap_or(0);
     let max = args.get("maxChanges").and_then(|v| v.as_i64()).unwrap_or(500);
 
-    let result = db::changelog::changes_since(&db.pool, account_id, "Mailbox", since_state, max).await?;
+    let result = db::changelog::changes_since(&db.conn, account_id, "Mailbox", since_state, max).await?;
 
     let resp = ChangesResponse {
         account_id: acct,

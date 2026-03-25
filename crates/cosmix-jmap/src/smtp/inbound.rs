@@ -62,7 +62,7 @@ pub async fn deliver(
 
     // --- Deliver to each recipient ---
     for rcpt in rcpt_to {
-        let account = db::account::get_by_email(&state.db.pool, rcpt).await?;
+        let account = db::account::get_by_email(&state.db.conn, rcpt).await?;
         let Some(account) = account else { continue };
 
         // Spam classification
@@ -89,18 +89,18 @@ pub async fn deliver(
 
         // Route based on spam verdict
         let target_mailbox = if spam_verdict.as_deref() == Some("SPAM") {
-            db::mailbox::get_by_role(&state.db.pool, account.id, "junk").await?
-                .unwrap_or(db::mailbox::get_inbox(&state.db.pool, account.id).await?)
+            db::mailbox::get_by_role(&state.db.conn, account.id, "junk").await?
+                .unwrap_or(db::mailbox::get_inbox(&state.db.conn, account.id).await?)
         } else {
-            db::mailbox::get_inbox(&state.db.pool, account.id).await?
+            db::mailbox::get_inbox(&state.db.conn, account.id).await?
         };
 
         // Store blob
-        let blob_id = db::blob::store(&state.db.pool, &state.db.blob_dir, account.id, &augmented_data).await?;
+        let blob_id = db::blob::store(&state.db.conn, &state.db.blob_dir, account.id, &augmented_data).await?;
 
         // Find or create thread
         let thread_id = db::thread::find_or_create(
-            &state.db.pool,
+            &state.db.conn,
             account.id,
             message_id.as_deref(),
             in_reply_to.as_deref(),
@@ -108,7 +108,7 @@ pub async fn deliver(
 
         // Create email record
         db::email::create(
-            &state.db.pool,
+            &state.db.conn,
             account.id,
             thread_id,
             &[target_mailbox],

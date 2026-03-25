@@ -20,7 +20,6 @@ tracing-subscriber.workspace = true
 anyhow.workspace = true
 uuid.workspace = true
 chrono.workspace = true
-sqlx.workspace = true
 clap = { version = "4", features = ["derive"] }
 blake3 = "1"
 toml_cfg.workspace = true

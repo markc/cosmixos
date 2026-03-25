@@ -283,7 +283,7 @@ where
                     Some(addr) => {
                         if !session.require_auth {
                             let local = crate::db::account::get_by_email(
-                                &session.state.db.pool,
+                                &session.state.db.conn,
                                 &addr,
                             ).await;
                             match local {
@@ -403,7 +403,7 @@ where
 
 /// Authenticate against the accounts database using bcrypt.
 async fn authenticate(state: &SmtpState, email: &str, password: &str) -> Result<Option<i32>> {
-    let account = crate::db::account::get_by_email(&state.db.pool, email).await?;
+    let account = crate::db::account::get_by_email(&state.db.conn, email).await?;
     match account {
         Some(a) => {
             let hash = a.password.clone();

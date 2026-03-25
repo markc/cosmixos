@@ -1,25 +1,27 @@
 //! Email storage operations.
 
+use std::sync::{Arc, Mutex};
+
 use anyhow::Result;
+use rusqlite::{Connection, params};
 use serde::Serialize;
-use sqlx::PgPool;
 use uuid::Uuid;
 
-#[derive(Debug, Serialize, sqlx::FromRow)]
+#[derive(Debug, Serialize)]
 pub struct Email {
-    pub id: Uuid,
+    pub id: String,
     #[serde(skip)]
     #[allow(dead_code)]
     pub account_id: i32,
     #[serde(rename = "threadId")]
-    pub thread_id: Uuid,
+    pub thread_id: String,
     #[serde(rename = "mailboxIds")]
-    pub mailbox_ids: Vec<Uuid>,
+    pub mailbox_ids: Vec<String>,
     #[serde(rename = "blobId")]
-    pub blob_id: Uuid,
+    pub blob_id: String,
     pub size: i32,
     #[serde(rename = "receivedAt")]
-    pub received_at: chrono::DateTime<chrono::Utc>,
+    pub received_at: String,
     #[serde(rename = "messageId", skip_serializing_if = "Option::is_none")]
     pub message_id: Option<String>,
     #[serde(rename = "inReplyTo", skip_serializing_if = "Option::is_none")]
@@ -31,7 +33,7 @@ pub struct Email {
     pub to_addr: Option<serde_json::Value>,
     #[serde(rename = "cc", skip_serializing_if = "Option::is_none")]
     pub cc_addr: Option<serde_json::Value>,
-    pub date: Option<chrono::DateTime<chrono::Utc>>,
+    pub date: Option<String>,
     pub preview: Option<String>,
     #[serde(rename = "hasAttachment")]
     pub has_attachment: bool,
@@ -42,121 +44,200 @@ pub struct Email {
     pub spam_verdict: Option<String>,
 }
 
-pub async fn get_by_ids(pool: &PgPool, account_id: i32, ids: &[Uuid]) -> Result<Vec<Email>> {
-    let rows = sqlx::query_as::<_, Email>(
-        "SELECT id, account_id, thread_id, mailbox_ids, blob_id, size, received_at, \
-         message_id, in_reply_to, subject, from_addr, to_addr, cc_addr, date, \
-         preview, has_attachment, keywords, spam_score, spam_verdict \
-         FROM emails WHERE account_id = $1 AND id = ANY($2)",
-    )
-    .bind(account_id)
-    .bind(ids)
-    .fetch_all(pool)
-    .await?;
-    Ok(rows)
+fn row_to_email(row: &rusqlite::Row<'_>) -> rusqlite::Result<Email> {
+    let mailbox_ids_json: String = row.get(3)?;
+    let mailbox_ids: Vec<String> = serde_json::from_str(&mailbox_ids_json).unwrap_or_default();
+
+    let in_reply_to_json: Option<String> = row.get(8)?;
+    let in_reply_to: Option<Vec<String>> = in_reply_to_json
+        .and_then(|s| serde_json::from_str(&s).ok());
+
+    let from_json: Option<String> = row.get(10)?;
+    let from_addr: Option<serde_json::Value> = from_json
+        .and_then(|s| serde_json::from_str(&s).ok());
+
+    let to_json: Option<String> = row.get(11)?;
+    let to_addr: Option<serde_json::Value> = to_json
+        .and_then(|s| serde_json::from_str(&s).ok());
+
+    let cc_json: Option<String> = row.get(12)?;
+    let cc_addr: Option<serde_json::Value> = cc_json
+        .and_then(|s| serde_json::from_str(&s).ok());
+
+    let keywords_json: String = row.get(16)?;
+    let keywords: serde_json::Value = serde_json::from_str(&keywords_json).unwrap_or(serde_json::json!({}));
+
+    Ok(Email {
+        id: row.get(0)?,
+        account_id: row.get(1)?,
+        thread_id: row.get(2)?,
+        mailbox_ids,
+        blob_id: row.get(4)?,
+        size: row.get(5)?,
+        received_at: row.get(6)?,
+        message_id: row.get(7)?,
+        in_reply_to,
+        subject: row.get(9)?,
+        from_addr,
+        to_addr,
+        cc_addr,
+        date: row.get(13)?,
+        preview: row.get(14)?,
+        has_attachment: row.get::<_, i32>(15)? != 0,
+        keywords,
+        spam_score: row.get(17)?,
+        spam_verdict: row.get(18)?,
+    })
+}
+
+const EMAIL_COLUMNS: &str = "id, account_id, thread_id, mailbox_ids, blob_id, size, received_at, \
+     message_id, in_reply_to, subject, from_addr, to_addr, cc_addr, date, \
+     preview, has_attachment, keywords, spam_score, spam_verdict";
+
+pub async fn get_by_ids(conn: &Arc<Mutex<Connection>>, account_id: i32, ids: &[Uuid]) -> Result<Vec<Email>> {
+    let conn = conn.clone();
+    let ids: Vec<String> = ids.iter().map(|u| u.to_string()).collect();
+    tokio::task::spawn_blocking(move || {
+        let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock error: {e}"))?;
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders: Vec<String> = ids.iter().enumerate().map(|(i, _)| format!("?{}", i + 2)).collect();
+        let sql = format!(
+            "SELECT {EMAIL_COLUMNS} FROM emails WHERE account_id = ?1 AND id IN ({})",
+            placeholders.join(", ")
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        param_values.push(Box::new(account_id));
+        for id in &ids {
+            param_values.push(Box::new(id.clone()));
+        }
+        let refs: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|b| b.as_ref()).collect();
+        let rows = stmt.query_map(refs.as_slice(), row_to_email)?;
+        let mut emails = Vec::new();
+        for row in rows {
+            emails.push(row?);
+        }
+        Ok(emails)
+    }).await?
 }
 
 pub async fn query_ids(
-    pool: &PgPool,
+    conn: &Arc<Mutex<Connection>>,
     account_id: i32,
     mailbox_id: Option<Uuid>,
     sort_desc: bool,
     position: i64,
     limit: i64,
 ) -> Result<(Vec<Uuid>, i64)> {
-    let (where_clause, count_clause) = if let Some(_mb_id) = mailbox_id {
-        (
-            format!(
-                "WHERE account_id = $1 AND $2 = ANY(mailbox_ids) ORDER BY received_at {} OFFSET $3 LIMIT $4",
-                if sort_desc { "DESC" } else { "ASC" }
-            ),
-            "SELECT COUNT(*) FROM emails WHERE account_id = $1 AND $2 = ANY(mailbox_ids)".to_string(),
-        )
-    } else {
-        (
-            format!(
-                "WHERE account_id = $1 ORDER BY received_at {} OFFSET $2 LIMIT $3",
-                if sort_desc { "DESC" } else { "ASC" }
-            ),
-            "SELECT COUNT(*) FROM emails WHERE account_id = $1".to_string(),
-        )
-    };
+    let conn = conn.clone();
+    let mailbox_id = mailbox_id.map(|u| u.to_string());
+    tokio::task::spawn_blocking(move || {
+        let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock error: {e}"))?;
+        let order = if sort_desc { "DESC" } else { "ASC" };
 
-    let sql = format!("SELECT id FROM emails {where_clause}");
+        if let Some(ref mb_id) = mailbox_id {
+            // Filter by mailbox — check JSON array membership
+            let sql = format!(
+                "SELECT id FROM emails WHERE account_id = ?1 AND mailbox_ids LIKE ?2 \
+                 ORDER BY received_at {order} LIMIT ?3 OFFSET ?4"
+            );
+            let pattern = format!("%\"{mb_id}\"%");
+            let count_sql = "SELECT COUNT(*) FROM emails WHERE account_id = ?1 AND mailbox_ids LIKE ?2";
 
-    let ids: Vec<(Uuid,)> = if let Some(mb_id) = mailbox_id {
-        sqlx::query_as(&sql)
-            .bind(account_id)
-            .bind(mb_id)
-            .bind(position)
-            .bind(limit)
-            .fetch_all(pool)
-            .await?
-    } else {
-        sqlx::query_as(&sql)
-            .bind(account_id)
-            .bind(position)
-            .bind(limit)
-            .fetch_all(pool)
-            .await?
-    };
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map(params![account_id, pattern, limit, position], |row| {
+                let id_str: String = row.get(0)?;
+                Ok(id_str)
+            })?;
+            let mut ids = Vec::new();
+            for row in rows {
+                ids.push(row?.parse::<Uuid>()?);
+            }
 
-    let total: (i64,) = if let Some(mb_id) = mailbox_id {
-        sqlx::query_as(&count_clause)
-            .bind(account_id)
-            .bind(mb_id)
-            .fetch_one(pool)
-            .await?
-    } else {
-        sqlx::query_as(&count_clause)
-            .bind(account_id)
-            .fetch_one(pool)
-            .await?
-    };
+            let total: i64 = conn.query_row(count_sql, params![account_id, pattern], |row| row.get(0))?;
+            Ok((ids, total))
+        } else {
+            let sql = format!(
+                "SELECT id FROM emails WHERE account_id = ?1 \
+                 ORDER BY received_at {order} LIMIT ?2 OFFSET ?3"
+            );
+            let count_sql = "SELECT COUNT(*) FROM emails WHERE account_id = ?1";
 
-    Ok((ids.into_iter().map(|r| r.0).collect(), total.0))
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map(params![account_id, limit, position], |row| {
+                let id_str: String = row.get(0)?;
+                Ok(id_str)
+            })?;
+            let mut ids = Vec::new();
+            for row in rows {
+                ids.push(row?.parse::<Uuid>()?);
+            }
+
+            let total: i64 = conn.query_row(count_sql, params![account_id], |row| row.get(0))?;
+            Ok((ids, total))
+        }
+    }).await?
 }
 
-pub async fn update_keywords(pool: &PgPool, account_id: i32, id: Uuid, keywords: &serde_json::Value) -> Result<bool> {
-    let result = sqlx::query(
-        "UPDATE emails SET keywords = $3 WHERE account_id = $1 AND id = $2",
-    )
-    .bind(account_id)
-    .bind(id)
-    .bind(keywords)
-    .execute(pool)
-    .await?;
-    Ok(result.rows_affected() > 0)
+pub async fn update_keywords(conn: &Arc<Mutex<Connection>>, account_id: i32, id: Uuid, keywords: &serde_json::Value) -> Result<bool> {
+    let conn = conn.clone();
+    let id_str = id.to_string();
+    let keywords_str = serde_json::to_string(keywords)?;
+    tokio::task::spawn_blocking(move || {
+        let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock error: {e}"))?;
+        let changes = conn.execute(
+            "UPDATE emails SET keywords = ?3 WHERE account_id = ?1 AND id = ?2",
+            params![account_id, id_str, keywords_str],
+        )?;
+        Ok(changes > 0)
+    }).await?
 }
 
-pub async fn update_mailboxes(pool: &PgPool, account_id: i32, id: Uuid, mailbox_ids: &[Uuid]) -> Result<bool> {
-    let result = sqlx::query(
-        "UPDATE emails SET mailbox_ids = $3 WHERE account_id = $1 AND id = $2",
-    )
-    .bind(account_id)
-    .bind(id)
-    .bind(mailbox_ids)
-    .execute(pool)
-    .await?;
-    Ok(result.rows_affected() > 0)
+pub async fn update_mailboxes(conn: &Arc<Mutex<Connection>>, account_id: i32, id: Uuid, mailbox_ids: &[Uuid]) -> Result<bool> {
+    let conn = conn.clone();
+    let id_str = id.to_string();
+    let mbox_strs: Vec<String> = mailbox_ids.iter().map(|u| u.to_string()).collect();
+    let mbox_json = serde_json::to_string(&mbox_strs)?;
+    tokio::task::spawn_blocking(move || {
+        let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock error: {e}"))?;
+        let changes = conn.execute(
+            "UPDATE emails SET mailbox_ids = ?3 WHERE account_id = ?1 AND id = ?2",
+            params![account_id, id_str, mbox_json],
+        )?;
+        Ok(changes > 0)
+    }).await?
 }
 
 /// Get the current mailbox_ids and blob_id for an email (for spam retraining).
-pub async fn get_mailbox_and_blob(pool: &PgPool, account_id: i32, id: Uuid) -> Result<Option<(Vec<Uuid>, Uuid)>> {
-    let row: Option<(Vec<Uuid>, Uuid)> = sqlx::query_as(
-        "SELECT mailbox_ids, blob_id FROM emails WHERE account_id = $1 AND id = $2",
-    )
-    .bind(account_id)
-    .bind(id)
-    .fetch_optional(pool)
-    .await?;
-    Ok(row)
+pub async fn get_mailbox_and_blob(conn: &Arc<Mutex<Connection>>, account_id: i32, id: Uuid) -> Result<Option<(Vec<Uuid>, Uuid)>> {
+    let conn = conn.clone();
+    let id_str = id.to_string();
+    tokio::task::spawn_blocking(move || {
+        let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock error: {e}"))?;
+        let result: rusqlite::Result<(String, String)> = conn.query_row(
+            "SELECT mailbox_ids, blob_id FROM emails WHERE account_id = ?1 AND id = ?2",
+            params![account_id, id_str],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        );
+        match result {
+            Ok((mbox_json, blob_id_str)) => {
+                let mbox_strs: Vec<String> = serde_json::from_str(&mbox_json).unwrap_or_default();
+                let mbox_ids: Vec<Uuid> = mbox_strs.iter().filter_map(|s| s.parse().ok()).collect();
+                let blob_id: Uuid = blob_id_str.parse()?;
+                Ok(Some((mbox_ids, blob_id)))
+            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }).await?
 }
 
 /// Create an email record (used by inbound delivery).
 #[allow(clippy::too_many_arguments)]
 pub async fn create(
-    pool: &PgPool,
+    conn: &Arc<Mutex<Connection>>,
     account_id: i32,
     thread_id: Uuid,
     mailbox_ids: &[Uuid],
@@ -174,43 +255,59 @@ pub async fn create(
     spam_score: Option<f64>,
     spam_verdict: Option<&str>,
 ) -> Result<Uuid> {
-    let (id,): (Uuid,) = sqlx::query_as(
-        "INSERT INTO emails (account_id, thread_id, mailbox_ids, blob_id, size, received_at, \
-         message_id, in_reply_to, subject, from_addr, to_addr, cc_addr, date, preview, \
-         has_attachment, spam_score, spam_verdict) \
-         VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) \
-         RETURNING id",
-    )
-    .bind(account_id)
-    .bind(thread_id)
-    .bind(mailbox_ids)
-    .bind(blob_id)
-    .bind(size)
-    .bind(message_id)
-    .bind(in_reply_to)
-    .bind(subject)
-    .bind(from_addr)
-    .bind(to_addr)
-    .bind(cc_addr)
-    .bind(date)
-    .bind(preview)
-    .bind(has_attachment)
-    .bind(spam_score)
-    .bind(spam_verdict)
-    .fetch_one(pool)
-    .await?;
+    let conn = conn.clone();
+    let id = Uuid::new_v4();
+    let id_str = id.to_string();
+    let thread_id_str = thread_id.to_string();
+    let mbox_strs: Vec<String> = mailbox_ids.iter().map(|u| u.to_string()).collect();
+    let mbox_json = serde_json::to_string(&mbox_strs)?;
+    let blob_id_str = blob_id.to_string();
+    let message_id = message_id.map(|s| s.to_string());
+    let in_reply_to_json = in_reply_to.map(|s| serde_json::to_string(s).unwrap_or_default());
+    let subject = subject.map(|s| s.to_string());
+    let from_json = from_addr.map(|v| serde_json::to_string(v).unwrap_or_default());
+    let to_json = to_addr.map(|v| serde_json::to_string(v).unwrap_or_default());
+    let cc_json = cc_addr.map(|v| serde_json::to_string(v).unwrap_or_default());
+    let date_str = date.map(|d| d.to_rfc3339());
+    let preview = preview.map(|s| s.to_string());
+    let has_attachment_int = if has_attachment { 1i32 } else { 0 };
+    let spam_verdict = spam_verdict.map(|s| s.to_string());
+    let now = chrono::Utc::now().to_rfc3339();
 
-    // Record in changelog
-    crate::db::changelog::record(pool, account_id, "Email", id, "created").await?;
+    tokio::task::spawn_blocking(move || {
+        let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock error: {e}"))?;
+        conn.execute(
+            "INSERT INTO emails (id, account_id, thread_id, mailbox_ids, blob_id, size, received_at, \
+             message_id, in_reply_to, subject, from_addr, to_addr, cc_addr, date, preview, \
+             has_attachment, spam_score, spam_verdict) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+            params![
+                id_str, account_id, thread_id_str, mbox_json, blob_id_str, size, now,
+                message_id, in_reply_to_json, subject, from_json, to_json, cc_json,
+                date_str, preview, has_attachment_int, spam_score, spam_verdict
+            ],
+        )?;
 
-    Ok(id)
+        // Record in changelog
+        let changelog_object_id = id_str.clone();
+        conn.execute(
+            "INSERT INTO changelog (account_id, object_type, object_id, change_type) VALUES (?1, ?2, ?3, ?4)",
+            params![account_id, "Email", changelog_object_id, "created"],
+        )?;
+
+        Ok(id)
+    }).await?
 }
 
-pub async fn delete(pool: &PgPool, account_id: i32, id: Uuid) -> Result<bool> {
-    let result = sqlx::query("DELETE FROM emails WHERE account_id = $1 AND id = $2")
-        .bind(account_id)
-        .bind(id)
-        .execute(pool)
-        .await?;
-    Ok(result.rows_affected() > 0)
+pub async fn delete(conn: &Arc<Mutex<Connection>>, account_id: i32, id: Uuid) -> Result<bool> {
+    let conn = conn.clone();
+    let id_str = id.to_string();
+    tokio::task::spawn_blocking(move || {
+        let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock error: {e}"))?;
+        let changes = conn.execute(
+            "DELETE FROM emails WHERE account_id = ?1 AND id = ?2",
+            params![account_id, id_str],
+        )?;
+        Ok(changes > 0)
+    }).await?
 }

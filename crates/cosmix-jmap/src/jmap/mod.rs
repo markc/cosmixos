@@ -199,7 +199,7 @@ pub async fn blob_download(
         return (StatusCode::BAD_REQUEST, "invalid blob id").into_response();
     };
 
-    match db::blob::load(&state.db.pool, &state.db.blob_dir, id).await {
+    match db::blob::load(&state.db.conn, &state.db.blob_dir, id).await {
         Ok(Some(data)) => {
             (
                 StatusCode::OK,
@@ -227,7 +227,7 @@ pub async fn blob_upload(
         return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
     };
 
-    match db::blob::store(&state.db.pool, &state.db.blob_dir, account_id, &body).await {
+    match db::blob::store(&state.db.conn, &state.db.blob_dir, account_id, &body).await {
         Ok(blob_id) => {
             let resp = serde_json::json!({
                 "accountId": account_id.to_string(),
