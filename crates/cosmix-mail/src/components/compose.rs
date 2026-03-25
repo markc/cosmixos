@@ -12,9 +12,12 @@ pub struct ComposeState {
     pub in_reply_to: Option<String>,
 }
 
+const ICON_BACK: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>"#;
+
 #[component]
 pub fn ComposeView(
     state: ComposeState,
+    on_back: EventHandler<()>,
     on_send: EventHandler<ComposeState>,
     on_discard: EventHandler<()>,
 ) -> Element {
@@ -34,7 +37,16 @@ pub fn ComposeView(
             // Header bar
             div {
                 style: "flex-shrink:0; padding:12px 24px; border-bottom:1px solid #1f2937; background:rgba(17,24,39,0.3); display:flex; align-items:center; justify-content:space-between;",
-                span { style: "font-size:14px; font-weight:600; color:#f3f4f6;", "New Message" }
+                div {
+                    style: "display:flex; align-items:center; gap:8px;",
+                    button {
+                        class: "mobile-back",
+                        style: "display:none; background:none; border:none; color:#9ca3af; cursor:pointer; padding:4px;",
+                        onclick: move |_| on_back.call(()),
+                        dangerous_inner_html: "{ICON_BACK}"
+                    }
+                    span { style: "font-size:14px; font-weight:600; color:#f3f4f6;", "New Message" }
+                }
                 div {
                     style: "display:flex; gap:8px;",
                     // Discard

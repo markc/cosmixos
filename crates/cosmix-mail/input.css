@@ -78,3 +78,28 @@ html, body, #main {
 .prose strong { font-weight: 700; }
 .prose em { font-style: italic; }
 .prose del { text-decoration: line-through; color: #9ca3af; }
+
+/* Mobile responsive layout */
+@media (max-width: 639px) {
+    .pane-sidebar { display: none !important; }
+    .pane-sidebar.mobile-active { display: flex !important; width: 100% !important; min-width: 100% !important; }
+    .pane-emails { display: none !important; }
+    .pane-emails.mobile-active { display: flex !important; width: 100% !important; min-width: 100% !important; }
+    .pane-reader { display: none !important; }
+    .pane-reader.mobile-active { display: flex !important; }
+    .mobile-back { display: flex !important; }
+    .desktop-only { display: none !important; }
+}
+
+@media (min-width: 640px) {
+    .mobile-back { display: none !important; }
+    .mobile-only { display: none !important; }
+}
+
+/* Larger touch targets on mobile */
+@media (max-width: 639px) {
+    .pane-sidebar button { min-height: 44px; font-size: 14px !important; }
+    .pane-emails button { min-height: 56px; }
+    .action-bar button { min-height: 40px; padding: 8px 14px !important; font-size: 13px !important; }
+    .prose { font-size: 1rem; }
+}

@@ -14,6 +14,14 @@ pub const JMAP_URL: &str = "https://mail.kanary.org:8443";
 pub const JMAP_USER: &str = "markc@kanary.org";
 pub const JMAP_PASS: &str = "changeme123";
 
+/// Which panel is visible on mobile (<640px).
+#[derive(Clone, Copy, PartialEq)]
+enum MobileView {
+    Mailboxes,
+    Emails,
+    Reader,
+}
+
 fn main() {
     #[cfg(target_os = "linux")]
     unsafe {
@@ -52,8 +60,8 @@ fn app() -> Element {
     let mut selected_email: Signal<Option<Email>> = use_signal(|| None);
     let mut error_msg: Signal<Option<String>> = use_signal(|| None);
     let mut compose: Signal<Option<ComposeState>> = use_signal(|| None);
-    // Bump to force email list reload
     let mut refresh: Signal<u32> = use_signal(|| 0);
+    let mut mobile_view: Signal<MobileView> = use_signal(|| MobileView::Emails);
 
     // Load mailboxes on startup
     let _load_mailboxes = use_resource(move || {
@@ -109,6 +117,11 @@ fn app() -> Element {
         mailboxes().iter().find(|m| m.role.as_deref() == Some(role)).map(|m| m.id.clone())
     };
 
+    let mv = mobile_view();
+    let sidebar_class = if mv == MobileView::Mailboxes { "pane-sidebar mobile-active" } else { "pane-sidebar" };
+    let emails_class = if mv == MobileView::Emails { "pane-emails mobile-active" } else { "pane-emails" };
+    let reader_class = if mv == MobileView::Reader { "pane-reader mobile-active" } else { "pane-reader" };
+
     rsx! {
         document::Link { rel: "stylesheet", href: TAILWIND_CSS }
         document::Style { "html,body,#main{{ margin:0!important; padding:0!important; background:#030712!important; width:100%!important; height:100%!important; overflow:hidden!important; }}" }
@@ -129,23 +142,28 @@ fn app() -> Element {
 
             // Pane 1: Sidebar
             MailboxList {
+                class: sidebar_class,
                 mailboxes: mailboxes(),
                 selected: selected_mailbox(),
                 on_select: move |id: String| {
                     compose.set(None);
                     selected_mailbox.set(Some(id));
+                    mobile_view.set(MobileView::Emails);
                 },
                 on_compose: move |_| {
                     compose.set(Some(ComposeState::default()));
+                    mobile_view.set(MobileView::Reader);
                 }
             }
 
             // Pane 2: Email list
             EmailList {
+                class: emails_class,
                 emails: emails(),
                 selected_id: selected_email().map(|e| e.id.clone()),
                 on_select: move |email: Email| {
                     compose.set(None);
+                    mobile_view.set(MobileView::Reader);
                     let c = client.peek().clone();
                     spawn(async move {
                         match c.emails(&[email.id.clone()], true).await {
@@ -157,99 +175,109 @@ fn app() -> Element {
                             Err(e) => error_msg.set(Some(format!("Failed to load email: {e}"))),
                         }
                     });
+                },
+                on_menu: move |_| {
+                    mobile_view.set(MobileView::Mailboxes);
                 }
             }
 
             // Pane 3: Compose or Email view
-            if let Some(state) = compose() {
-                ComposeView {
-                    state: state,
-                    on_send: move |_cs: ComposeState| {
-                        #[cfg(not(target_arch = "wasm32"))]
-                        {
+            div {
+                class: "{reader_class}",
+                style: "flex:1; display:flex; flex-direction:column; min-width:0; overflow:hidden; height:100%;",
+                if let Some(state) = compose() {
+                    ComposeView {
+                        state: state,
+                        on_back: move |_| { mobile_view.set(MobileView::Emails); },
+                        on_send: move |_cs: ComposeState| {
+                            #[cfg(not(target_arch = "wasm32"))]
+                            {
+                                let c = client.peek().clone();
+                                let drafts_id = find_mailbox("drafts").unwrap_or_default();
+                                let cs = _cs;
+                                spawn(async move {
+                                    let to_addrs: Vec<String> = cs.to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                                    let cc_addrs: Vec<String> = cs.cc.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                                    match c.send_compose(
+                                        JMAP_USER,
+                                        &to_addrs,
+                                        &cc_addrs,
+                                        &cs.subject,
+                                        &cs.body,
+                                        cs.in_reply_to.as_deref(),
+                                        &drafts_id,
+                                    ).await {
+                                        Ok(()) => {
+                                            compose.set(None);
+                                            refresh.set(refresh() + 1);
+                                        }
+                                        Err(e) => error_msg.set(Some(format!("Send failed: {e}"))),
+                                    }
+                                });
+                            }
+                            #[cfg(target_arch = "wasm32")]
+                            error_msg.set(Some("Send not yet supported in web mode".into()));
+                        },
+                        on_discard: move |_| {
+                            compose.set(None);
+                            mobile_view.set(MobileView::Emails);
+                        }
+                    }
+                } else {
+                    EmailView {
+                        email: selected_email(),
+                        on_back: move |_| { mobile_view.set(MobileView::Emails); },
+                        on_reply: move |email: Email| {
+                            compose.set(Some(compose_reply(&email)));
+                        },
+                        on_forward: move |email: Email| {
+                            compose.set(Some(compose_forward(&email)));
+                        },
+                        on_delete: move |email: Email| {
                             let c = client.peek().clone();
-                            let drafts_id = find_mailbox("drafts").unwrap_or_default();
-                            let cs = _cs;
+                            let trash_id = find_mailbox("trash").unwrap_or_default();
                             spawn(async move {
-                                let to_addrs: Vec<String> = cs.to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-                                let cc_addrs: Vec<String> = cs.cc.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-                                match c.send_compose(
-                                    JMAP_USER,
-                                    &to_addrs,
-                                    &cc_addrs,
-                                    &cs.subject,
-                                    &cs.body,
-                                    cs.in_reply_to.as_deref(),
-                                    &drafts_id,
-                                ).await {
+                                let result = if !trash_id.is_empty() {
+                                    c.update_email(&email.id, serde_json::json!({"mailboxIds": {&trash_id: true}})).await
+                                } else {
+                                    c.destroy_email(&email.id).await
+                                };
+                                match result {
                                     Ok(()) => {
-                                        compose.set(None);
+                                        selected_email.set(None);
                                         refresh.set(refresh() + 1);
                                     }
-                                    Err(e) => error_msg.set(Some(format!("Send failed: {e}"))),
+                                    Err(e) => error_msg.set(Some(format!("Delete failed: {e}"))),
                                 }
                             });
-                        }
-                        #[cfg(target_arch = "wasm32")]
-                        error_msg.set(Some("Send not yet supported in web mode".into()));
-                    },
-                    on_discard: move |_| {
-                        compose.set(None);
+                        },
+                        on_archive: move |email: Email| {
+                            let c = client.peek().clone();
+                            let archive_id = find_mailbox("archive").unwrap_or_default();
+                            if archive_id.is_empty() { return; }
+                            spawn(async move {
+                                match c.update_email(&email.id, serde_json::json!({"mailboxIds": {&archive_id: true}})).await {
+                                    Ok(()) => {
+                                        selected_email.set(None);
+                                        refresh.set(refresh() + 1);
+                                    }
+                                    Err(e) => error_msg.set(Some(format!("Archive failed: {e}"))),
+                                }
+                            });
+                        },
+                        on_toggle_read: move |email: Email| {
+                            let c = client.peek().clone();
+                            let is_read = email.is_read();
+                            spawn(async move {
+                                match c.update_email(&email.id, serde_json::json!({"keywords": {"$seen": !is_read}})).await {
+                                    Ok(()) => {
+                                        refresh.set(refresh() + 1);
+                                    }
+                                    Err(e) => error_msg.set(Some(format!("Toggle read failed: {e}"))),
+                                }
+                            });
+                        },
                     }
-                }
-            } else {
-                EmailView {
-                    email: selected_email(),
-                    on_reply: move |email: Email| {
-                        compose.set(Some(compose_reply(&email)));
-                    },
-                    on_forward: move |email: Email| {
-                        compose.set(Some(compose_forward(&email)));
-                    },
-                    on_delete: move |email: Email| {
-                        let c = client.peek().clone();
-                        let trash_id = find_mailbox("trash").unwrap_or_default();
-                        spawn(async move {
-                            let result = if !trash_id.is_empty() {
-                                c.update_email(&email.id, serde_json::json!({"mailboxIds": {&trash_id: true}})).await
-                            } else {
-                                c.destroy_email(&email.id).await
-                            };
-                            match result {
-                                Ok(()) => {
-                                    selected_email.set(None);
-                                    refresh.set(refresh() + 1);
-                                }
-                                Err(e) => error_msg.set(Some(format!("Delete failed: {e}"))),
-                            }
-                        });
-                    },
-                    on_archive: move |email: Email| {
-                        let c = client.peek().clone();
-                        let archive_id = find_mailbox("archive").unwrap_or_default();
-                        if archive_id.is_empty() { return; }
-                        spawn(async move {
-                            match c.update_email(&email.id, serde_json::json!({"mailboxIds": {&archive_id: true}})).await {
-                                Ok(()) => {
-                                    selected_email.set(None);
-                                    refresh.set(refresh() + 1);
-                                }
-                                Err(e) => error_msg.set(Some(format!("Archive failed: {e}"))),
-                            }
-                        });
-                    },
-                    on_toggle_read: move |email: Email| {
-                        let c = client.peek().clone();
-                        let is_read = email.is_read();
-                        spawn(async move {
-                            match c.update_email(&email.id, serde_json::json!({"keywords": {"$seen": !is_read}})).await {
-                                Ok(()) => {
-                                    refresh.set(refresh() + 1);
-                                }
-                                Err(e) => error_msg.set(Some(format!("Toggle read failed: {e}"))),
-                            }
-                        });
-                    },
                 }
             }
         }

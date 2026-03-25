@@ -2,18 +2,30 @@ use dioxus::prelude::*;
 use crate::jmap::Email;
 use super::icons::*;
 
+const ICON_MENU: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" x2="20" y1="12" y2="12"/><line x1="4" x2="20" y1="6" y2="6"/><line x1="4" x2="20" y1="18" y2="18"/></svg>"#;
+
 #[component]
 pub fn EmailList(
+    class: String,
     emails: Vec<Email>,
     selected_id: Option<String>,
     on_select: EventHandler<Email>,
+    on_menu: EventHandler<()>,
 ) -> Element {
     rsx! {
         div {
+            class: "{class}",
             style: "width:300px; min-width:300px; display:flex; flex-direction:column; border-right:1px solid #1f2937; background:#0d1117; height:100%;",
             // Header
             div {
-                style: "height:44px; display:flex; align-items:center; padding:0 16px; border-bottom:1px solid #1f2937; font-size:11px; color:#6b7280;",
+                style: "height:44px; display:flex; align-items:center; padding:0 16px; border-bottom:1px solid #1f2937; font-size:11px; color:#6b7280; gap:8px;",
+                // Mobile hamburger menu
+                button {
+                    class: "mobile-back",
+                    style: "display:none; background:none; border:none; color:#9ca3af; cursor:pointer; padding:4px;",
+                    onclick: move |_| on_menu.call(()),
+                    dangerous_inner_html: "{ICON_MENU}"
+                }
                 "{emails.len()} messages"
             }
             // Message list

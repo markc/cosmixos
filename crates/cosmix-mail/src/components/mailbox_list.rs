@@ -4,6 +4,7 @@ use super::icons::*;
 
 #[component]
 pub fn MailboxList(
+    class: String,
     mailboxes: Vec<Mailbox>,
     selected: Option<String>,
     on_select: EventHandler<String>,
@@ -11,6 +12,7 @@ pub fn MailboxList(
 ) -> Element {
     rsx! {
         div {
+            class: "{class}",
             style: "width:200px; min-width:200px; display:flex; flex-direction:column; background:#111827; border-right:1px solid #1f2937; height:100%;",
             // App title
             div {
