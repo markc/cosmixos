@@ -114,25 +114,64 @@ async fn create_submission(db: &Db, account_id: i32, obj: &serde_json::Value) ->
         anyhow::bail!("No recipients");
     }
 
-    // Queue for delivery — blob_id is now a String, parse to Uuid
     let blob_uuid: Uuid = email.blob_id.parse()?;
-    let queue_id = crate::smtp::queue::enqueue(&db.conn, &from_addr, &to_addrs, blob_uuid).await?;
+
+    // Separate local vs remote recipients
+    let mut remote_addrs = Vec::new();
+    for addr in &to_addrs {
+        let local_account = db::account::get_by_email(&db.conn, addr).await?;
+        if let Some(rcpt_account) = local_account {
+            // Local delivery — copy blob to recipient's store and create email record
+            let blob_data = db::blob::load(&db.conn, &db.blob_dir, blob_uuid).await?;
+            if let Some(data) = blob_data {
+                let rcpt_blob_id = db::blob::store(&db.conn, &db.blob_dir, rcpt_account.id, &data).await?;
+                let thread_id = db::thread::find_or_create(
+                    &db.conn, rcpt_account.id, None, None,
+                ).await?;
+                let inbox_id = db::mailbox::get_inbox(&db.conn, rcpt_account.id).await?;
+
+                // Parse basic headers from the blob for the email record
+                let msg = mail_parser::MessageParser::default().parse(&data);
+                let subject = msg.as_ref().and_then(|m| m.subject()).map(|s| s.to_string());
+                let preview = msg.as_ref().and_then(|m| m.body_preview(256)).map(|s| s.to_string());
+
+                db::email::create(
+                    &db.conn,
+                    rcpt_account.id,
+                    thread_id,
+                    &[inbox_id],
+                    rcpt_blob_id,
+                    data.len() as i32,
+                    None, None,
+                    subject.as_deref(),
+                    Some(&serde_json::json!([{"name": "", "email": &from_addr}])),
+                    Some(&serde_json::json!([{"name": "", "email": addr}])),
+                    None,
+                    Some(chrono::Utc::now()),
+                    preview.as_deref(),
+                    false,
+                    None, None,
+                ).await?;
+
+                tracing::info!(from = %from_addr, to = %addr, "Local delivery completed");
+            }
+        } else {
+            remote_addrs.push(addr.clone());
+        }
+    }
+
+    // Queue remote recipients for outbound SMTP
+    if !remote_addrs.is_empty() {
+        let queue_id = crate::smtp::queue::enqueue(&db.conn, &from_addr, &remote_addrs, blob_uuid).await?;
+        tracing::info!(queue_id = queue_id, from = %from_addr, to = ?remote_addrs, "EmailSubmission queued for remote delivery");
+    }
 
     // Move to Sent mailbox if one exists
     if let Ok(Some(sent_id)) = db::mailbox::get_by_role(&db.conn, account_id, "sent").await {
         let _ = db::email::update_mailboxes(&db.conn, account_id, email_uuid, &[sent_id]).await;
     }
 
-    // Generate a submission ID from the queue ID
     let submission_id = Uuid::new_v4();
-
-    tracing::info!(
-        queue_id = queue_id,
-        from = %from_addr,
-        to = ?to_addrs,
-        "EmailSubmission queued"
-    );
-
     Ok(submission_id)
 }
 

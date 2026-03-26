@@ -1,4 +1,4 @@
-const CACHE = "cosmix-mail-v2";
+const CACHE = "cosmix-mail-v3";
 const PRECACHE = ["/", "/wasm/cosmix-mail.js", "/wasm/cosmix-mail_bg.wasm"];
 
 self.addEventListener("install", (e) => {
