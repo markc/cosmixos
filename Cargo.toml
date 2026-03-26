@@ -12,6 +12,7 @@ members = [
     "crates/cosmix-hub",
     "crates/cosmix-client",
     "crates/cosmix-files",
+    "crates/cosmix-mon",
 ]
 
 [workspace.package]
