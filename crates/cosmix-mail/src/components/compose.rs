@@ -1,5 +1,6 @@
 use dioxus::prelude::*;
 use super::icons::*;
+use cosmix_ui::icons::ICON_BACK;
 
 /// State for the compose form.
 #[derive(Clone, Default, Debug, PartialEq)]
@@ -11,8 +12,6 @@ pub struct ComposeState {
     pub body: String,
     pub in_reply_to: Option<String>,
 }
-
-const ICON_BACK: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>"#;
 
 #[component]
 pub fn ComposeView(

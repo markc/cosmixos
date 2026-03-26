@@ -1,13 +1,8 @@
 use dioxus::prelude::*;
 use crate::jmap::Email;
 use super::icons::*;
-
-const ICON_REPLY: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg>"#;
-const ICON_FORWARD: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 17 20 12 15 7"/><path d="M4 18v-2a4 4 0 0 1 4-4h12"/></svg>"#;
-const ICON_MAIL_OPEN: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.2 8.4c.5.38.8.97.8 1.6v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V10a2 2 0 0 1 .8-1.6l8-6a2 2 0 0 1 2.4 0l8 6Z"/><path d="m22 10-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 10"/></svg>"#;
-const ICON_BACK: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>"#;
-
-const ACTION_BTN: &str = "padding:4px 10px; background:none; border:1px solid #374151; color:#9ca3af; border-radius:4px; cursor:pointer; font-size:11px; display:flex; align-items:center; gap:4px;";
+use cosmix_ui::icons::{ICON_REPLY, ICON_FORWARD, ICON_MAIL_OPEN, ICON_BACK};
+use cosmix_ui::theme::ACTION_BTN;
 
 #[component]
 pub fn EmailView(
@@ -149,12 +144,5 @@ pub fn EmailView(
 }
 
 pub fn render_markdown(text: &str) -> String {
-    use pulldown_cmark::{Options, Parser, html};
-    let opts = Options::ENABLE_TABLES
-        | Options::ENABLE_STRIKETHROUGH
-        | Options::ENABLE_TASKLISTS;
-    let parser = Parser::new_ext(text, opts);
-    let mut html_output = String::new();
-    html::push_html(&mut html_output, parser);
-    html_output
+    cosmix_ui::markdown::render_simple(text)
 }

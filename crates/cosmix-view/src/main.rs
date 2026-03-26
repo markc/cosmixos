@@ -5,8 +5,6 @@ use dioxus::prelude::*;
 use dioxus::prelude::Key;
 use std::path::PathBuf;
 
-const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico"];
-
 fn main() {
     let arg = std::env::args().nth(1);
 
@@ -83,15 +81,15 @@ fn build_menu() -> dioxus_desktop::muda::Menu {
 }
 
 fn is_image(path: &PathBuf) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|ext| IMAGE_EXTENSIONS.contains(&ext.to_lowercase().as_str()))
+    cosmix_ui::util::is_image(path)
 }
 
 fn is_dot(path: &PathBuf) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("dot") || ext.eq_ignore_ascii_case("gv"))
+    cosmix_ui::util::is_dot(path)
+}
+
+fn mime_from_ext(path: &PathBuf) -> &'static str {
+    cosmix_ui::util::mime_from_ext(path)
 }
 
 fn app() -> Element {
@@ -193,20 +191,25 @@ fn render_dot_file(path: &PathBuf) -> Element {
         Err(e) => format!("<pre>DOT render error: {e}</pre>"),
     };
 
+    let canvas_css = cosmix_ui::canvas::CANVAS_CSS;
+    let canvas_js = cosmix_ui::canvas::CANVAS_JS;
+    let controls = cosmix_ui::canvas::CANVAS_CONTROLS_TEXT;
+
     rsx! {
-        document::Style { "{DOT_CSS}" }
+        document::Style { "{CANVAS_BASE_CSS}" }
+        document::Style { "{canvas_css}" }
         div {
-            class: "dot-canvas",
+            class: "pan-canvas",
             div {
-                id: "dot-content",
-                class: "dot-content",
+                id: "pan-content",
+                class: "pan-content",
                 dangerous_inner_html: "{svg_html}"
             }
-            div { class: "dot-controls",
-                "Scroll: zoom | Drag: pan | Double-click: reset"
+            div { class: "pan-controls",
+                "{controls}"
             }
         }
-        document::Script { "{DOT_JS}" }
+        document::Script { "{canvas_js}" }
     }
 }
 
@@ -218,164 +221,45 @@ fn render_image(path: &PathBuf) -> Element {
     let b64 = STANDARD.encode(&data);
     let src = format!("data:{mime};base64,{b64}");
 
+    let canvas_css = cosmix_ui::canvas::CANVAS_CSS;
+    let canvas_js = cosmix_ui::canvas::CANVAS_JS;
+    let controls = cosmix_ui::canvas::CANVAS_CONTROLS_TEXT;
+
     rsx! {
-        document::Style { "{DOT_CSS}" }
+        document::Style { "{CANVAS_BASE_CSS}" }
+        document::Style { "{canvas_css}" }
         document::Style { "{IMAGE_CSS}" }
         div {
-            class: "dot-canvas",
+            class: "pan-canvas",
             div {
-                id: "dot-content",
-                class: "dot-content",
+                id: "pan-content",
+                class: "pan-content",
                 img { src: "{src}", alt: "{path_str}" }
             }
-            div { class: "dot-controls",
-                "Scroll: zoom | Drag: pan | Double-click: reset"
+            div { class: "pan-controls",
+                "{controls}"
             }
         }
-        document::Script { "{DOT_JS}" }
+        document::Script { "{canvas_js}" }
     }
 }
 
-fn mime_from_ext(path: &PathBuf) -> &'static str {
-    match path.extension().and_then(|e| e.to_str()).unwrap_or("") {
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "svg" => "image/svg+xml",
-        "bmp" => "image/bmp",
-        "ico" => "image/x-icon",
-        _ => "application/octet-stream",
-    }
-}
-
-const DOT_CSS: &str = r#"
+/// Base reset for canvas views (DOT and image). The shared CANVAS_CSS handles
+/// the pan/zoom container itself; this sets the page-level background.
+const CANVAS_BASE_CSS: &str = r#"
 html, body, #main {
     margin: 0; padding: 0;
     background: #f0f0f0;
     width: 100%; height: 100%;
     overflow: hidden;
 }
-.dot-canvas {
-    width: 100%; height: 100vh;
-    overflow: hidden;
-    position: relative;
-    cursor: grab;
-}
-.dot-canvas:active { cursor: grabbing; }
-.dot-content {
-    transform-origin: 0 0;
-    position: absolute;
-    top: 0; left: 0;
-}
-.dot-content svg {
-    display: block;
-}
-.dot-controls {
-    position: fixed;
-    bottom: 8px; right: 12px;
-    font-size: 11px;
-    color: #6b7280;
-    background: rgba(255,255,255,0.85);
-    padding: 3px 10px;
-    border-radius: 4px;
-    pointer-events: none;
-    font-family: system-ui, sans-serif;
-}
 "#;
 
-const DOT_JS: &str = r#"
-(function() {
-    let scale = 1, panX = 0, panY = 0;
-    let dragging = false, startX = 0, startY = 0, startPanX = 0, startPanY = 0;
-    const el = document.getElementById('dot-content');
-    const canvas = el.parentElement;
-
-    function apply() {
-        el.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')';
-    }
-
-    function centerView() {
-        const child = el.querySelector('svg') || el.querySelector('img');
-        if (!child) return;
-        // For images, use naturalWidth/Height; for SVG use bounding rect
-        const sw = child.naturalWidth || (child.getBoundingClientRect().width / scale);
-        const sh = child.naturalHeight || (child.getBoundingClientRect().height / scale);
-        if (!sw || !sh) return;
-        const cw = canvas.clientWidth;
-        const ch = canvas.clientHeight;
-        scale = Math.min(cw / sw, ch / sh, 1) * 0.9;
-        panX = (cw - sw * scale) / 2;
-        panY = (ch - sh * scale) / 2;
-        apply();
-    }
-
-    // Center after content is ready
-    function initCenter() {
-        const img = el.querySelector('img');
-        if (img) {
-            function tryCenter() {
-                if (img.naturalWidth > 0 && img.naturalHeight > 0) {
-                    centerView();
-                } else {
-                    setTimeout(tryCenter, 50);
-                }
-            }
-            img.addEventListener('load', centerView);
-            setTimeout(tryCenter, 100);
-        } else {
-            setTimeout(centerView, 50);
-        }
-    }
-    initCenter();
-
-    canvas.addEventListener('wheel', function(e) {
-        e.preventDefault();
-        const rect = canvas.getBoundingClientRect();
-        const mx = e.clientX - rect.left;
-        const my = e.clientY - rect.top;
-        const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-        const newScale = Math.max(0.1, Math.min(10, scale * factor));
-        panX = mx - (mx - panX) * (newScale / scale);
-        panY = my - (my - panY) * (newScale / scale);
-        scale = newScale;
-        apply();
-    }, {passive: false});
-
-    canvas.addEventListener('mousedown', function(e) {
-        if (e.button !== 0) return;
-        dragging = true;
-        startX = e.clientX; startY = e.clientY;
-        startPanX = panX; startPanY = panY;
-    });
-    window.addEventListener('mousemove', function(e) {
-        if (!dragging) return;
-        panX = startPanX + (e.clientX - startX);
-        panY = startPanY + (e.clientY - startY);
-        apply();
-    });
-    window.addEventListener('mouseup', function() { dragging = false; });
-
-    canvas.addEventListener('dblclick', function() {
-        centerView();
-    });
-})();
-"#;
-
+/// Image-specific overrides: dark background for contrast.
 const IMAGE_CSS: &str = r#"
-html, body, #main {
-    margin: 0; padding: 0;
-    background: #1a1a1a;
-    width: 100%; height: 100%;
-    overflow: hidden;
-}
-.dot-canvas { background: #1a1a1a; }
-.dot-content img {
-    display: block;
-    max-width: none;
-    max-height: none;
-}
-.dot-controls { color: #9ca3af; background: rgba(0,0,0,0.6); }
+html, body, #main { background: #1a1a1a; }
+.pan-canvas { background: #1a1a1a; }
+.pan-controls { color: #9ca3af; background: rgba(0,0,0,0.6); }
 "#;
 
 const CSS: &str = r#"
