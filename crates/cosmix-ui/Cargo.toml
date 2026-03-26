@@ -1,0 +1,20 @@
+[package]
+name = "cosmix-ui"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared Dioxus components, icons, theme, and utilities for cosmix apps"
+
+[features]
+default = ["desktop"]
+desktop = ["dep:dioxus-desktop", "dep:tao", "dep:rfd"]
+web = []
+
+[dependencies]
+dioxus = { version = "0.7", features = [] }
+dioxus-desktop = { version = "0.7", optional = true }
+tao = { version = "0.34", default-features = false, optional = true }
+rfd = { version = "0.15", optional = true }
+pulldown-cmark = { workspace = true }
+base64 = { workspace = true }

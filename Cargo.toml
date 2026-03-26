@@ -8,6 +8,7 @@ members = [
     "crates/cosmix-embed",
     "crates/cosmix-web",
     "crates/cosmix-view",
+    "crates/cosmix-ui",
 ]
 
 [workspace.package]
