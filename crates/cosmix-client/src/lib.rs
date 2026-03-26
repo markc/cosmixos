@@ -165,6 +165,34 @@ impl HubClient {
         self.send_raw(&msg).await
     }
 
+    /// Send a response to an incoming command.
+    ///
+    /// Sets `type: response` and echoes the original command's `id` so the
+    /// caller's pending-request map resolves correctly.
+    pub async fn respond(
+        &self,
+        cmd: &IncomingCommand,
+        rc: u8,
+        body: &str,
+    ) -> Result<()> {
+        let mut msg = AmpMessage::new()
+            .with_header("command", &cmd.command)
+            .with_header("from", &self.service_name)
+            .with_header("to", &cmd.from)
+            .with_header("type", "response")
+            .with_header("rc", &rc.to_string());
+
+        if let Some(ref id) = cmd.id {
+            msg = msg.with_header("id", id);
+        }
+
+        if !body.is_empty() {
+            msg.body = body.to_string();
+        }
+
+        self.send_raw(&msg).await
+    }
+
     /// Take the receiver for incoming commands from other services.
     ///
     /// Can only be called once; subsequent calls return `None`.

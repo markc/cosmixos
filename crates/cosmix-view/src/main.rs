@@ -4,6 +4,7 @@ mod markdown;
 use dioxus::prelude::*;
 use dioxus::prelude::Key;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 fn main() {
     let arg = std::env::args().nth(1);
@@ -18,6 +19,14 @@ fn main() {
         println!("          If omitted, opens with File > Open (Ctrl+O)");
         std::process::exit(0);
     }
+
+    // Initialize tracing
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "cosmix_view=info".into()),
+        )
+        .init();
 
     let path = arg.map(|a| {
         std::fs::canonicalize(&a).unwrap_or_else(|e| {
@@ -97,6 +106,22 @@ fn app() -> Element {
         std::env::var("COSMIX_VIEW_PATH").ok().map(PathBuf::from)
     });
 
+    let mut hub_client: Signal<Option<Arc<cosmix_client::HubClient>>> = use_signal(|| None);
+
+    use_effect(move || {
+        spawn(async move {
+            match cosmix_client::HubClient::connect_default("view").await {
+                Ok(client) => {
+                    tracing::info!("Connected to hub as 'view'");
+                    hub_client.set(Some(Arc::new(client)));
+                }
+                Err(e) => {
+                    tracing::debug!("Hub not available, using standalone mode: {e}");
+                }
+            }
+        });
+    });
+
     let open_file = move || {
         spawn(async move {
             let picked = rfd::AsyncFileDialog::new()
@@ -129,6 +154,20 @@ fn app() -> Element {
         if e.modifiers().ctrl() {
             match e.key() {
                 Key::Character(c) if c == "o" => open_file(),
+                Key::Character(c) if c == "l" => {
+                    if let Some(ref client) = hub_client() {
+                        let client = client.clone();
+                        spawn(async move {
+                            let path = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+                            match client.call("files", "file.list", serde_json::json!({"path": path})).await {
+                                Ok(result) => tracing::info!("file.list result: {result}"),
+                                Err(e) => tracing::warn!("file.list failed: {e}"),
+                            }
+                        });
+                    } else {
+                        tracing::debug!("Ctrl+L: hub not connected, ignoring");
+                    }
+                }
                 Key::Character(c) if c == "q" => std::process::exit(0),
                 _ => {}
             }
