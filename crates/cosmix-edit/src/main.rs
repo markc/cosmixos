@@ -1,0 +1,340 @@
+//! cosmix-edit — Text editor service for the cosmix appmesh.
+//!
+//! Registers as "edit" on the hub. Handles:
+//! - `edit.open` — open a file by path
+//! - `edit.goto` — jump to line number
+//! - `edit.compose` — open editor with prefilled content (for email drafts etc.)
+//! - `edit.get` — return current editor content
+//!
+//! Other apps delegate: mail sends `edit.compose`, files sends `edit.open`.
+
+use std::sync::Arc;
+
+use dioxus::prelude::*;
+
+fn main() {
+    cosmix_ui::desktop::init_linux_env();
+
+    #[cfg(feature = "desktop")]
+    {
+        use dioxus_desktop::{Config, LogicalSize, WindowBuilder};
+
+        let menu = build_menu();
+        let cfg = Config::new()
+            .with_window(
+                WindowBuilder::new()
+                    .with_title("cosmix-edit")
+                    .with_inner_size(LogicalSize::new(800.0, 600.0)),
+            )
+            .with_menu(menu);
+
+        LaunchBuilder::new().with_cfg(cfg).launch(app);
+        return;
+    }
+
+    #[allow(unreachable_code)]
+    {
+        eprintln!("Desktop feature not enabled");
+        std::process::exit(1);
+    }
+}
+
+#[cfg(feature = "desktop")]
+fn build_menu() -> dioxus_desktop::muda::Menu {
+    use dioxus_desktop::muda::*;
+
+    let menu = Menu::new();
+    let file_menu = Submenu::new("&File", true);
+    file_menu.append(&MenuItem::with_id("open", "&Open\tCtrl+O", true, None)).ok();
+    file_menu.append(&MenuItem::with_id("save", "&Save\tCtrl+S", true, None)).ok();
+    file_menu.append(&MenuItem::with_id("save-as", "Save &As\tCtrl+Shift+S", true, None)).ok();
+    file_menu.append(&PredefinedMenuItem::separator()).ok();
+    file_menu.append(&MenuItem::with_id("quit", "&Quit\tCtrl+Q", true, None)).ok();
+    menu.append(&file_menu).ok();
+    menu
+}
+
+// ── Shared state for hub commands to update the editor ──
+
+static OPEN_REQUEST: GlobalSignal<Option<OpenRequest>> = Signal::global(|| None);
+
+#[derive(Clone, Debug)]
+struct OpenRequest {
+    path: Option<String>,
+    content: Option<String>,
+    line: Option<usize>,
+}
+
+// ── Hub command handling ──
+
+async fn handle_hub_commands(client: Arc<cosmix_client::HubClient>) {
+    let mut rx = match client.incoming_async().await {
+        Some(rx) => rx,
+        None => return,
+    };
+
+    while let Some(cmd) = rx.recv().await {
+        let result = match cmd.command.as_str() {
+            "edit.open" => handle_edit_open(&cmd),
+            "edit.goto" => handle_edit_goto(&cmd),
+            "edit.compose" => handle_edit_compose(&cmd),
+            "edit.get" => Ok(r#"{"status": "ok"}"#.to_string()),
+            _ => Err(format!("unknown command: {}", cmd.command)),
+        };
+
+        match result {
+            Ok(body) => {
+                if let Err(e) = client.respond(&cmd, 0, &body).await {
+                    tracing::warn!("failed to send response: {e}");
+                }
+            }
+            Err(msg) => {
+                let err_body = serde_json::json!({"error": msg}).to_string();
+                if let Err(e) = client.respond(&cmd, 10, &err_body).await {
+                    tracing::warn!("failed to send error response: {e}");
+                }
+            }
+        }
+    }
+}
+
+fn handle_edit_open(cmd: &cosmix_client::IncomingCommand) -> Result<String, String> {
+    let path = cmd.args.get("path")
+        .and_then(|v| v.as_str())
+        .ok_or("missing path argument")?;
+
+    let line = cmd.args.get("line").and_then(|v| v.as_u64()).map(|l| l as usize);
+
+    *OPEN_REQUEST.write() = Some(OpenRequest {
+        path: Some(path.to_string()),
+        content: None,
+        line,
+    });
+
+    Ok(serde_json::json!({"opened": path}).to_string())
+}
+
+fn handle_edit_goto(cmd: &cosmix_client::IncomingCommand) -> Result<String, String> {
+    let line = cmd.args.get("line")
+        .and_then(|v| v.as_u64())
+        .ok_or("missing line argument")? as usize;
+
+    *OPEN_REQUEST.write() = Some(OpenRequest {
+        path: None,
+        content: None,
+        line: Some(line),
+    });
+
+    Ok(serde_json::json!({"line": line}).to_string())
+}
+
+fn handle_edit_compose(cmd: &cosmix_client::IncomingCommand) -> Result<String, String> {
+    let content = cmd.args.get("content")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let path = cmd.args.get("path")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    *OPEN_REQUEST.write() = Some(OpenRequest {
+        path,
+        content: Some(content),
+        line: None,
+    });
+
+    Ok(serde_json::json!({"composing": true}).to_string())
+}
+
+// ── File I/O ──
+
+fn load_file(path: &str) -> Result<String, String> {
+    std::fs::read_to_string(path).map_err(|e| e.to_string())
+}
+
+fn save_file(path: &str, content: &str) -> Result<(), String> {
+    std::fs::write(path, content).map_err(|e| e.to_string())
+}
+
+// ── UI ──
+
+fn app() -> Element {
+    let mut content = use_signal(String::new);
+    let mut file_path: Signal<Option<String>> = use_signal(|| None);
+    let mut modified = use_signal(|| false);
+    let mut status_msg = use_signal(String::new);
+    let mut line_count = use_signal(|| 1usize);
+
+    // Connect to hub
+    use_effect(move || {
+        spawn(async move {
+            match cosmix_client::HubClient::connect_default("edit").await {
+                Ok(client) => {
+                    let client = Arc::new(client);
+                    tracing::info!("connected to cosmix-hub as 'edit'");
+                    tokio::spawn(handle_hub_commands(client));
+                }
+                Err(_) => {
+                    tracing::debug!("hub not available, running standalone");
+                }
+            }
+        });
+    });
+
+    // Watch for open requests from hub commands
+    use_effect(move || {
+        spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                let req = OPEN_REQUEST.write().take();
+                if let Some(req) = req {
+                    if let Some(path) = &req.path {
+                        match load_file(path) {
+                            Ok(text) => {
+                                content.set(text.clone());
+                                file_path.set(Some(path.clone()));
+                                modified.set(false);
+                                line_count.set(text.lines().count().max(1));
+                                status_msg.set(format!("Opened {path}"));
+                            }
+                            Err(e) => {
+                                status_msg.set(format!("Error: {e}"));
+                            }
+                        }
+                    }
+                    if let Some(text) = &req.content {
+                        content.set(text.clone());
+                        file_path.set(req.path.clone());
+                        modified.set(true);
+                        line_count.set(text.lines().count().max(1));
+                        status_msg.set("Compose mode".into());
+                    }
+                }
+            }
+        });
+    });
+
+    // Keyboard shortcuts
+    let onkeydown = move |e: KeyboardEvent| {
+        if e.modifiers().ctrl() {
+            if let Key::Character(ref c) = e.key() {
+                match c.as_str() {
+                    "s" => {
+                        if let Some(ref path) = file_path() {
+                            match save_file(path, &content()) {
+                                Ok(()) => {
+                                    modified.set(false);
+                                    status_msg.set(format!("Saved {path}"));
+                                }
+                                Err(e) => status_msg.set(format!("Save error: {e}")),
+                            }
+                        } else {
+                            status_msg.set("No file path — use Save As".into());
+                        }
+                    }
+                    "o" => {
+                        spawn(async move {
+                            if let Some(path) = cosmix_ui::desktop::pick_file(
+                                &[("Text files", &["txt", "md", "rs", "toml", "json", "yaml", "sh", "py", "lua"])],
+                            ).await {
+                                *OPEN_REQUEST.write() = Some(OpenRequest {
+                                    path: Some(path.to_string_lossy().to_string()),
+                                    content: None,
+                                    line: None,
+                                });
+                            }
+                        });
+                    }
+                    "q" => std::process::exit(0),
+                    _ => {}
+                }
+            }
+        }
+    };
+
+    let title_suffix = if modified() { " *" } else { "" };
+    let title = file_path()
+        .map(|p| {
+            let name = std::path::Path::new(&p)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or(p.clone());
+            format!("{name}{title_suffix}")
+        })
+        .unwrap_or_else(|| format!("untitled{title_suffix}"));
+
+    let lines = line_count();
+
+    rsx! {
+        document::Style { "{CSS}" }
+        div {
+            tabindex: "0",
+            onkeydown: onkeydown,
+            style: "outline:none; width:100%; height:100vh; display:flex; flex-direction:column; background:{BG_BASE}; color:{TEXT_PRIMARY}; font-family:monospace;",
+
+            // Title bar
+            div {
+                style: "padding:6px 12px; background:{BG_SURFACE}; border-bottom:1px solid {BORDER}; font-size:13px; display:flex; align-items:center;",
+                span { style: "font-weight:600; font-family:sans-serif;", "{title}" }
+                if let Some(ref path) = file_path() {
+                    span { style: "margin-left:8px; color:{TEXT_DIM}; font-size:11px; font-family:sans-serif;", "{path}" }
+                }
+            }
+
+            // Editor area with line numbers
+            div {
+                style: "flex:1; display:flex; overflow:hidden;",
+
+                // Line numbers
+                div {
+                    style: "width:48px; background:{BG_SURFACE}; border-right:1px solid {BORDER}; padding:8px 4px; text-align:right; color:{TEXT_DIM}; font-size:13px; line-height:1.5; overflow:hidden; user-select:none;",
+                    for i in 1..=lines {
+                        div { "{i}" }
+                    }
+                }
+
+                // Text area
+                textarea {
+                    style: "flex:1; background:{BG_BASE}; color:{TEXT_PRIMARY}; border:none; outline:none; padding:8px; font-size:13px; font-family:'JetBrains Mono',monospace; line-height:1.5; resize:none; tab-size:4;",
+                    spellcheck: false,
+                    value: "{content}",
+                    oninput: move |e| {
+                        let val = e.value();
+                        line_count.set(val.lines().count().max(1));
+                        content.set(val);
+                        modified.set(true);
+                    },
+                }
+            }
+
+            // Status bar
+            div {
+                style: "padding:4px 12px; background:{BG_SURFACE}; border-top:1px solid {BORDER}; color:{TEXT_DIM}; font-size:11px; display:flex; gap:16px; font-family:sans-serif;",
+                span { "{status_msg}" }
+                span { style: "margin-left:auto;", "{lines} lines" }
+            }
+        }
+    }
+}
+
+// ── Theme ──
+
+const BG_BASE: &str = cosmix_ui::theme::BG_BASE;
+const BG_SURFACE: &str = cosmix_ui::theme::BG_SURFACE;
+const BORDER: &str = cosmix_ui::theme::BORDER_DEFAULT;
+const TEXT_PRIMARY: &str = cosmix_ui::theme::TEXT_PRIMARY;
+const TEXT_DIM: &str = cosmix_ui::theme::TEXT_DIM;
+
+const CSS: &str = r#"
+html, body, #main {
+    margin: 0; padding: 0;
+    width: 100%; height: 100%;
+    overflow: hidden;
+}
+textarea { caret-color: #60a5fa; }
+::-webkit-scrollbar { width: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #374151; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #4b5563; }
+"#;

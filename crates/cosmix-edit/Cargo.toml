@@ -1,39 +1,28 @@
 [package]
-name = "cosmix-mail"
+name = "cosmix-edit"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Cross-platform mail/calendar/contacts/AI client — Dioxus desktop + web"
+description = "Text editor service for the cosmix appmesh"
 
 [[bin]]
-name = "cosmix-mail"
+name = "cosmix-edit"
 path = "src/main.rs"
 
 [features]
 default = ["desktop"]
 desktop = ["dioxus/desktop", "dep:dioxus-desktop", "dep:tao"]
-web = ["dioxus/web"]
 
 [dependencies]
 dioxus = { version = "0.7", features = [] }
 dioxus-desktop = { version = "0.7", optional = true }
 tao = { version = "0.34", default-features = false, optional = true }
-serde.workspace = true
-serde_json.workspace = true
-anyhow.workspace = true
-uuid = { workspace = true, features = ["js"] }
-chrono.workspace = true
-pulldown-cmark.workspace = true
 cosmix-ui = { path = "../cosmix-ui" }
 cosmix-client = { path = "../cosmix-client" }
-
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-reqwest = { workspace = true }
+serde.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
+anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-reqwest = { version = "0.12", features = ["json"] }
-getrandom = { version = "0.3", features = ["wasm_js"] }

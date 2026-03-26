@@ -1,4 +1,5 @@
 mod components;
+mod hub;
 mod jmap;
 
 use dioxus::prelude::*;
@@ -71,6 +72,13 @@ fn app() -> Element {
     let mut compose: Signal<Option<ComposeState>> = use_signal(|| None);
     let mut refresh: Signal<u32> = use_signal(|| 0);
     let mut mobile_view: Signal<MobileView> = use_signal(|| MobileView::Emails);
+
+    // Connect to hub as "mail" service (non-blocking, silent failure)
+    use_effect(move || {
+        spawn(async move {
+            hub::connect_to_hub().await;
+        });
+    });
 
     // Load mailboxes on startup
     let _load_mailboxes = use_resource(move || {
