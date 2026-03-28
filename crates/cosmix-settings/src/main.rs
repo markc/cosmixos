@@ -135,7 +135,7 @@ fn app() -> Element {
                 style: "width:180px;background:var(--bg-secondary);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:8px 0;",
 
                 div {
-                    style: "padding:12px 16px;font-size:14px;font-weight:600;color:var(--fg-secondary);",
+                    style: "padding:12px 16px;font-size:var(--font-size);font-weight:600;color:var(--fg-secondary);",
                     "Settings"
                 }
 
@@ -150,7 +150,7 @@ fn app() -> Element {
 
                         rsx! {
                             div {
-                                style: "padding:8px 16px;cursor:pointer;background:{bg};color:{color};font-size:13px;border-left:3px solid {border_color};",
+                                style: "padding:8px 16px;cursor:pointer;background:{bg};color:{color};font-size:var(--font-size-sm);border-left:3px solid {border_color};",
                                 onclick: {
                                     let key = key.clone();
                                     move |_| active_section.set(key.clone())
@@ -182,7 +182,7 @@ fn app() -> Element {
                     style: "padding:10px 20px;background:var(--bg-secondary);border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;",
 
                     div {
-                        style: "font-size:12px;color:var(--fg-muted);",
+                        style: "font-size:var(--font-size-sm);color:var(--fg-muted);",
                         if !save_status().is_empty() {
                             "{save_status()}"
                         } else if dirty() {
@@ -196,12 +196,12 @@ fn app() -> Element {
                         style: "display:flex;gap:8px;",
 
                         button {
-                            style: "background:var(--bg-tertiary);border:1px solid var(--border);color:var(--fg-secondary);padding:6px 16px;border-radius:var(--radius-sm);cursor:pointer;font-size:13px;",
+                            style: "background:var(--bg-tertiary);border:1px solid var(--border);color:var(--fg-secondary);padding:6px 16px;border-radius:var(--radius-sm);cursor:pointer;font-size:var(--font-size-sm);",
                             onclick: on_reload,
                             "Reload"
                         }
                         button {
-                            style: "background:var(--accent);border:1px solid var(--accent-hover);color:var(--accent-fg);padding:6px 16px;border-radius:var(--radius-sm);cursor:pointer;font-size:13px;",
+                            style: "background:var(--accent);border:1px solid var(--accent-hover);color:var(--accent-fg);padding:6px 16px;border-radius:var(--radius-sm);cursor:pointer;font-size:var(--font-size-sm);",
                             onclick: on_save,
                             "Save"
                         }
@@ -236,7 +236,7 @@ fn section_editor(section: String, settings: Signal<cosmix_config::CosmixSetting
 
     rsx! {
         h2 {
-            style: "margin:0 0 16px 0;font-size:18px;font-weight:600;",
+            style: "margin:0 0 16px 0;font-size:var(--font-size-lg);font-weight:600;",
             "{section_label}"
         }
 
@@ -255,7 +255,7 @@ fn section_editor(section: String, settings: Signal<cosmix_config::CosmixSetting
                         style: "margin-bottom:12px;display:flex;align-items:center;gap:12px;",
 
                         label {
-                            style: "width:180px;font-size:13px;color:var(--fg-secondary);text-transform:capitalize;flex-shrink:0;",
+                            style: "width:180px;font-size:var(--font-size-sm);color:var(--fg-secondary);text-transform:capitalize;flex-shrink:0;",
                             "{display_key}"
                         }
 
@@ -275,7 +275,7 @@ fn theme_presets(settings: Signal<cosmix_config::CosmixSettings>, dirty: Signal<
         div {
             style: "margin-bottom:20px;padding:12px;background:var(--bg-secondary);border-radius:var(--radius-md);",
 
-            div { style: "font-size:13px;font-weight:600;color:var(--fg-secondary);margin-bottom:10px;", "Theme Presets" }
+            div { style: "font-size:var(--font-size-sm);font-weight:600;color:var(--fg-secondary);margin-bottom:10px;", "Theme Presets" }
 
             div {
                 style: "display:flex;gap:8px;flex-wrap:wrap;",
@@ -309,7 +309,7 @@ fn theme_presets(settings: Signal<cosmix_config::CosmixSettings>, dirty: Signal<
                                     }
                                 },
                                 div { style: "width:24px;height:24px;border-radius:50%;background:{swatch_color};" }
-                                span { style: "font-size:11px;color:var(--fg-secondary);", "{name}" }
+                                span { style: "font-size:var(--font-size-sm);color:var(--fg-secondary);", "{name}" }
                             }
                         }
                     }
@@ -385,7 +385,7 @@ fn field_input(
                                 }
                             },
                         }
-                        span { style: "font-size:12px;color:var(--fg-muted);min-width:30px;", "{display}" }
+                        span { style: "font-size:var(--font-size-sm);color:var(--fg-muted);min-width:30px;", "{display}" }
                     }
                 }
             } else {
@@ -393,7 +393,7 @@ fn field_input(
                     input {
                         r#type: "number",
                         value: "{display}",
-                        style: "flex:1;background:var(--bg-tertiary);border:1px solid var(--border);color:var(--fg-primary);padding:6px 10px;border-radius:var(--radius-sm);font-size:13px;outline:none;font-family:var(--font-mono);max-width:120px;",
+                        style: "flex:1;background:var(--bg-tertiary);border:1px solid var(--border);color:var(--fg-primary);padding:6px 10px;border-radius:var(--radius-sm);font-size:var(--font-size-sm);outline:none;font-family:var(--font-mono);max-width:120px;",
                         onchange: {
                             let dotpath = dotpath.clone();
                             move |e: Event<FormData>| {
@@ -434,7 +434,7 @@ fn field_input(
                 input {
                     r#type: if is_password { "password" } else { "text" },
                     value: "{display}",
-                    style: "flex:1;background:var(--bg-tertiary);border:1px solid var(--border);color:var(--fg-primary);padding:6px 10px;border-radius:var(--radius-sm);font-size:13px;outline:none;font-family:var(--font-mono);",
+                    style: "flex:1;background:var(--bg-tertiary);border:1px solid var(--border);color:var(--fg-primary);padding:6px 10px;border-radius:var(--radius-sm);font-size:var(--font-size-sm);outline:none;font-family:var(--font-mono);",
                     onchange: {
                         let dotpath = dotpath.clone();
                         move |e: Event<FormData>| {
