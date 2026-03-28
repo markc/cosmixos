@@ -234,7 +234,7 @@ async fn watch_config_file(state: Arc<AppState>) {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    cosmix_daemon::init_tracing("cosmix_configd");
+    let _log = cosmix_daemon::init_tracing("cosmix_configd");
 
     let cli = Cli::parse();
 

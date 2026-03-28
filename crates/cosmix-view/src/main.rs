@@ -13,6 +13,8 @@ use cosmix_ui::menu::{action_shortcut, amp_action, menubar, standard_file_menu, 
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() {
+    let _log = cosmix_ui::app_init::init_app_tracing("cosmix-view");
+
     let arg = std::env::args().nth(1);
 
     // Handle --help / -h
@@ -25,14 +27,6 @@ fn main() {
         println!("          If omitted, opens with File > Open (Ctrl+O)");
         std::process::exit(0);
     }
-
-    // Initialize tracing
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "cosmix_view=info".into()),
-        )
-        .init();
 
     let path = arg.map(|a| {
         std::fs::canonicalize(&a).unwrap_or_else(|e| {
@@ -83,11 +77,13 @@ enum ViewRequest {
 }
 
 fn dispatch_command(cmd: &cosmix_client::IncomingCommand) -> Result<String, String> {
+    eprintln!("[view] dispatch: {} args={}", cmd.command, cmd.args);
     match cmd.command.as_str() {
         "view.open" => {
             let path = cmd.args.get("path")
                 .and_then(|v| v.as_str())
                 .ok_or("missing path argument")?;
+            eprintln!("[view] view.open: {path}");
             *VIEW_REQUEST.write() = Some(ViewRequest::OpenFile(path.to_string()));
             Ok(serde_json::json!({"opened": path}).to_string())
         }
@@ -95,6 +91,7 @@ fn dispatch_command(cmd: &cosmix_client::IncomingCommand) -> Result<String, Stri
             let content = cmd.args.get("content")
                 .and_then(|v| v.as_str())
                 .ok_or("missing content argument")?;
+            eprintln!("[view] view.show-markdown: {} bytes", content.len());
             *VIEW_REQUEST.write() = Some(ViewRequest::ShowMarkdown(content.to_string()));
             Ok(r#"{"status":"ok"}"#.to_string())
         }
@@ -143,11 +140,13 @@ fn app() -> Element {
                 if let Some(req) = req {
                     match req {
                         ViewRequest::OpenFile(path) => {
+                            eprintln!("[view] poll: OpenFile {path}");
                             *VIEW_PATH.write() = Some(path.clone());
                             file_path.set(Some(PathBuf::from(path)));
                             markdown_content.set(None);
                         }
                         ViewRequest::ShowMarkdown(content) => {
+                            eprintln!("[view] poll: ShowMarkdown {} bytes", content.len());
                             file_path.set(None);
                             markdown_content.set(Some(content));
                         }

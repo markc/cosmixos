@@ -510,7 +510,7 @@ impl QueryRowOptional for Result<Post, rusqlite::Error> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    cosmix_daemon::init_tracing("cosmix_webd");
+    let _log = cosmix_daemon::init_tracing("cosmix_webd");
 
     let cli = Cli::parse();
 

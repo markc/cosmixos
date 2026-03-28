@@ -172,7 +172,7 @@ async fn handle_hub_commands(client: Arc<cosmix_client::HubClient>) {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    cosmix_daemon::init_tracing("cosmix_mond");
+    let _log = cosmix_daemon::init_tracing("cosmix_mond");
 
     let cli = Cli::parse();
 

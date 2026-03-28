@@ -7,16 +7,6 @@ use dioxus::prelude::*;
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        tracing_subscriber::fmt()
-            .with_env_filter(
-                tracing_subscriber::EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| "cosmix_shell=info".into()),
-            )
-            .init();
-    }
-
     cosmix_ui::app_init::launch_desktop("cosmix-shell", 1400.0, 900.0, app);
 }
 

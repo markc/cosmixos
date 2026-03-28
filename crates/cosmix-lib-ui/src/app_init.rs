@@ -230,6 +230,7 @@ pub fn use_hub_handler<F>(
             };
 
             while let Some(cmd) = rx.recv().await {
+                eprintln!("[hub-handler:{service_name}] cmd={} from={}", cmd.command, cmd.from);
                 let result = match cmd.command.as_str() {
                     #[cfg(feature = "config")]
                     "config.changed" => {
@@ -239,16 +240,21 @@ pub fn use_hub_handler<F>(
                     _ => handler(&cmd),
                 };
 
+                match &result {
+                    Ok(body) => eprintln!("[hub-handler:{service_name}] ok body={}B", body.len()),
+                    Err(msg) => eprintln!("[hub-handler:{service_name}] err={msg}"),
+                }
+
                 match result {
                     Ok(body) => {
                         if let Err(e) = c.respond(&cmd, 0, &body).await {
-                            tracing::warn!("failed to send response: {e}");
+                            eprintln!("[hub-handler:{service_name}] respond FAILED: {e}");
                         }
                     }
                     Err(msg) => {
                         let err_body = serde_json::json!({"error": msg}).to_string();
                         if let Err(e) = c.respond(&cmd, 10, &err_body).await {
-                            tracing::warn!("failed to send error response: {e}");
+                            eprintln!("[hub-handler:{service_name}] respond err FAILED: {e}");
                         }
                     }
                 }
@@ -274,6 +280,9 @@ pub fn use_hub_handler<F>(
 /// }
 /// ```
 pub fn launch_desktop(title: &str, width: f64, height: f64, app_fn: fn() -> Element) {
+    #[cfg(not(target_arch = "wasm32"))]
+    let _log_guard = init_app_tracing(title);
+
     #[cfg(all(not(target_arch = "wasm32"), feature = "desktop"))]
     {
         crate::desktop::init_linux_env();
@@ -286,4 +295,42 @@ pub fn launch_desktop(title: &str, width: f64, height: f64, app_fn: fn() -> Elem
     {
         dioxus::launch(app_fn);
     }
+}
+
+/// Initialize tracing for a GUI app: stderr + daily log file.
+///
+/// Log files: `~/.local/log/cosmix/{app_name}.YYYY-MM-DD.log`
+#[cfg(not(target_arch = "wasm32"))]
+pub fn init_app_tracing(app_name: &str) -> tracing_appender::non_blocking::WorkerGuard {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
+    // Derive a log-friendly name: "Cosmix Files" → "cosmix-files"
+    let log_name = app_name
+        .to_lowercase()
+        .replace(' ', "-");
+
+    let default = format!("{}=info", log_name.replace('-', "_"));
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| default.into());
+
+    let log_dir = std::env::var("HOME")
+        .map(|h| std::path::PathBuf::from(h).join(".local/log/cosmix"))
+        .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/cosmix-log"));
+    let _ = std::fs::create_dir_all(&log_dir);
+
+    let file_appender = tracing_appender::rolling::daily(&log_dir, &log_name);
+    let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(non_blocking)
+                .with_ansi(false),
+        )
+        .init();
+
+    guard
 }

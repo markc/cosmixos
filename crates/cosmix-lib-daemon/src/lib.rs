@@ -3,21 +3,49 @@
 //! Provides common initialization patterns used by all 6 daemons:
 //! tracing setup, graceful shutdown signal, and optional TLS configuration.
 
-/// Initialize tracing with env filter and a service-specific default level.
+/// Initialize tracing with dual output: stderr + daily log file.
 ///
 /// Reads `RUST_LOG` from the environment; falls back to `"{crate_name}=info"`.
+/// Log files are written to `~/.local/log/cosmix/{crate_name}.YYYY-MM-DD.log`.
+///
+/// Returns a `WorkerGuard` that **must** be held alive for the process lifetime.
+/// Dropping it flushes pending log writes.
 ///
 /// ```ignore
-/// cosmix_daemon::init_tracing("cosmix_maild");
+/// let _log = cosmix_daemon::init_tracing("cosmix_maild");
 /// ```
-pub fn init_tracing(crate_name: &str) {
+pub fn init_tracing(crate_name: &str) -> tracing_appender::non_blocking::WorkerGuard {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
     let default = format!("{crate_name}=info");
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| default.into()),
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| default.into());
+
+    let log_dir = log_dir();
+    let _ = std::fs::create_dir_all(&log_dir);
+
+    let file_appender = tracing_appender::rolling::daily(&log_dir, crate_name);
+    let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(non_blocking)
+                .with_ansi(false),
         )
         .init();
+
+    guard
+}
+
+/// Returns the log directory: `~/.local/log/cosmix/`.
+pub fn log_dir() -> std::path::PathBuf {
+    std::env::var("HOME")
+        .map(|h| std::path::PathBuf::from(h).join(".local/log/cosmix"))
+        .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/cosmix-log"))
 }
 
 /// Wait for a shutdown signal (Ctrl+C or SIGTERM on Unix).

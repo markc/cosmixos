@@ -18,6 +18,7 @@ tls = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile"]
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+tracing-appender.workspace = true
 anyhow.workspace = true
 
 # TLS (optional)

@@ -27,5 +27,7 @@ cosmix_config = { package = "cosmix-lib-config", path = "../cosmix-lib-config", 
 tokio = { workspace = true, optional = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
 pulldown-cmark = { workspace = true }
 base64 = { workspace = true }

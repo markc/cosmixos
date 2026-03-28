@@ -27,11 +27,11 @@ pub async fn execute(
         // Substitute variables in args
         let args = if let Some(ref template) = step.args {
             let substituted = substitute(template, ctx);
-            tracing::info!("Script step {} substituted args: {substituted}", i + 1);
+            eprintln!("[script] step {} args: {substituted}", i + 1);
             match serde_json::from_str(&substituted) {
                 Ok(val) => val,
                 Err(e) => {
-                    tracing::error!("Script step {} args parse error: {e}", i + 1);
+                    eprintln!("[script] step {} args PARSE ERROR: {e}", i + 1);
                     return ScriptResult {
                         rc: 10,
                         body: None,
@@ -47,7 +47,7 @@ pub async fn execute(
         match hub.call(&step.to, &step.command, args).await {
             Ok(response) => {
                 let body = response.to_string();
-                tracing::info!("Script step {} response: {body}", i + 1);
+                eprintln!("[script] step {} response: {body}", i + 1);
 
                 // Store result if requested
                 if let Some(ref var_name) = step.store {
@@ -83,9 +83,8 @@ pub async fn execute(
                 last_body = Some(body);
             }
             Err(e) => {
-                tracing::error!(
-                    "Script '{}' step {} failed: {e}",
-                    script.script.name,
+                eprintln!(
+                    "[script] step {} CALL FAILED: {e}",
                     i + 1
                 );
                 return ScriptResult {

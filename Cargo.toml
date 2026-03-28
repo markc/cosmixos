@@ -30,6 +30,8 @@ members = [
     "crates/cosmix-maild",
     "crates/cosmix-mond",
     "crates/cosmix-webd",
+    "crates/cosmix-logd",
+    "crates/cosmix-mcp",
 ]
 
 [workspace.package]
@@ -43,6 +45,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
 anyhow = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }

@@ -394,7 +394,7 @@ struct AppState {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    cosmix_daemon::init_tracing("cosmix_indexd");
+    let _log = cosmix_daemon::init_tracing("cosmix_indexd");
 
     let listener = if let Ok(listener) = try_systemd_socket() {
         info!("using systemd socket activation");

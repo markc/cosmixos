@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "cosmix": {
+      "command": "/home/cosmix/.local/bin/cosmix-mcp"
+    }
+  }
+}

@@ -75,7 +75,7 @@ enum QueueAction {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    cosmix_daemon::init_tracing("cosmix_maild");
+    let _log = cosmix_daemon::init_tracing("cosmix_maild");
 
     let cli = Cli::parse();
 

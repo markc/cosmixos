@@ -50,10 +50,14 @@ type Registry = Arc<RwLock<HashMap<String, mpsc::UnboundedSender<String>>>>;
 /// Used to route responses back to the originating connection (e.g. mesh bridge).
 type PendingResponses = Arc<RwLock<HashMap<String, mpsc::UnboundedSender<String>>>>;
 
+/// Tap subscribers receive copies of all routed AMP traffic (read-only observation).
+type TapSubscribers = Arc<RwLock<Vec<mpsc::UnboundedSender<String>>>>;
+
 #[derive(Clone)]
 struct AppState {
     registry: Registry,
     pending_responses: PendingResponses,
+    tap_subscribers: TapSubscribers,
     mesh: Arc<MeshPeers>,
     node_name: String,
 }
@@ -62,7 +66,7 @@ struct AppState {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    cosmix_daemon::init_tracing("cosmix_hubd");
+    let _log = cosmix_daemon::init_tracing("cosmix_hubd");
 
     let cli = Cli::parse();
 
@@ -108,9 +112,12 @@ async fn main() -> Result<()> {
 
     let pending_responses: PendingResponses = Arc::new(RwLock::new(HashMap::new()));
 
+    let tap_subscribers: TapSubscribers = Arc::new(RwLock::new(Vec::new()));
+
     let state = AppState {
         registry,
         pending_responses,
+        tap_subscribers,
         mesh,
         node_name: cli.node.clone(),
     };
@@ -231,12 +238,14 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                 handle_hub_command(&amp_msg, &tx, &state, &mut service_name).await;
             } else {
                 route_local(&state.registry, &state.pending_responses, local_service, &text, &amp_msg, &tx).await;
+                broadcast_tap(&state.tap_subscribers, &text).await;
             }
             continue;
         }
 
         // Plain service name — route locally
         route_local(&state.registry, &state.pending_responses, target, &text, &amp_msg, &tx).await;
+        broadcast_tap(&state.tap_subscribers, &text).await;
     }
 
     // Cleanup: remove service from registry on disconnect
@@ -282,6 +291,28 @@ async fn route_local(
             .with_header("rc", "10")
             .with_header("error", &format!("Service '{service}' not found"));
         let _ = caller_tx.send(err.to_wire());
+    }
+}
+
+/// Send a copy of a routed message to all tap subscribers (read-only observation).
+async fn broadcast_tap(tap_subscribers: &TapSubscribers, raw: &str) {
+    let taps = tap_subscribers.read().await;
+    if taps.is_empty() {
+        return;
+    }
+    // Send to all tap subscribers, remove any that have disconnected
+    let mut disconnected = Vec::new();
+    for (i, tap_tx) in taps.iter().enumerate() {
+        if tap_tx.send(raw.to_string()).is_err() {
+            disconnected.push(i);
+        }
+    }
+    drop(taps);
+    if !disconnected.is_empty() {
+        let mut taps = tap_subscribers.write().await;
+        for i in disconnected.into_iter().rev() {
+            taps.remove(i);
+        }
     }
 }
 
@@ -362,6 +393,16 @@ async fn handle_hub_command(
             let mut resp = respond("0");
             resp.set("command", "hub.peers");
             resp.body = serde_json::to_string(&body).unwrap_or_else(|_| "{}".to_string());
+            let _ = tx.send(resp.to_wire());
+        }
+
+        "hub.tap" => {
+            state.tap_subscribers.write().await.push(tx.clone());
+            tracing::info!("Tap subscriber added");
+
+            let mut resp = respond("0");
+            resp.set("command", "hub.tap");
+            resp.body = r#"{"tapping": true}"#.to_string();
             let _ = tx.send(resp.to_wire());
         }
 
