@@ -8,10 +8,8 @@
 //!
 //! Other apps delegate: mail sends `edit.compose`, files sends `edit.open`.
 
-use std::sync::Arc;
-
 use dioxus::prelude::*;
-use cosmix_ui::app_init::{THEME, use_theme_css, handle_config_changed};
+use cosmix_ui::app_init::{THEME, use_hub_client, use_hub_handler, use_theme_css};
 use cosmix_ui::menu::{action_shortcut, menubar, standard_file_menu, separator, submenu, MenuBar, Shortcut};
 
 #[global_allocator]
@@ -34,45 +32,13 @@ struct OpenRequest {
 
 // ── Hub command handling ──
 
-async fn handle_hub_commands(client: Arc<cosmix_client::HubClient>) {
-    // Register for config change notifications
-    let _ = client.call(
-        "configd",
-        "config.watch",
-        serde_json::json!({ "watcher": "edit" }),
-    ).await;
-
-    let mut rx = match client.incoming_async().await {
-        Some(rx) => rx,
-        None => return,
-    };
-
-    while let Some(cmd) = rx.recv().await {
-        let result = match cmd.command.as_str() {
-            "edit.open" => handle_edit_open(&cmd),
-            "edit.goto" => handle_edit_goto(&cmd),
-            "edit.compose" => handle_edit_compose(&cmd),
-            "edit.get" => Ok(r#"{"status": "ok"}"#.to_string()),
-            "config.changed" => {
-                handle_config_changed();
-                Ok(r#"{"status": "ok"}"#.to_string())
-            }
-            _ => Err(format!("unknown command: {}", cmd.command)),
-        };
-
-        match result {
-            Ok(body) => {
-                if let Err(e) = client.respond(&cmd, 0, &body).await {
-                    tracing::warn!("failed to send response: {e}");
-                }
-            }
-            Err(msg) => {
-                let err_body = serde_json::json!({"error": msg}).to_string();
-                if let Err(e) = client.respond(&cmd, 10, &err_body).await {
-                    tracing::warn!("failed to send error response: {e}");
-                }
-            }
-        }
+fn dispatch_command(cmd: &cosmix_client::IncomingCommand) -> Result<String, String> {
+    match cmd.command.as_str() {
+        "edit.open" => handle_edit_open(cmd),
+        "edit.goto" => handle_edit_goto(cmd),
+        "edit.compose" => handle_edit_compose(cmd),
+        "edit.get" => Ok(r#"{"status": "ok"}"#.to_string()),
+        _ => Err(format!("unknown command: {}", cmd.command)),
     }
 }
 
@@ -143,24 +109,9 @@ fn app() -> Element {
     let mut modified = use_signal(|| false);
     let mut status_msg = use_signal(String::new);
     let mut line_count = use_signal(|| 1usize);
-    let mut hub_client: Signal<Option<Arc<cosmix_client::HubClient>>> = use_signal(|| None);
-
-    // Connect to hub
-    use_effect(move || {
-        spawn(async move {
-            match cosmix_client::HubClient::connect_default("edit").await {
-                Ok(client) => {
-                    let client = Arc::new(client);
-                    tracing::info!("connected to cosmix-hub as 'edit'");
-                    hub_client.set(Some(client.clone()));
-                    tokio::spawn(handle_hub_commands(client));
-                }
-                Err(_) => {
-                    tracing::debug!("hub not available, running standalone");
-                }
-            }
-        });
-    });
+    // Connect to hub + dispatch commands
+    let hub_client = use_hub_client("edit");
+    use_hub_handler(hub_client, "edit", dispatch_command);
 
     // Watch for open requests from hub commands
     use_effect(move || {

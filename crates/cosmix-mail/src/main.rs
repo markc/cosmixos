@@ -2,9 +2,8 @@ mod components;
 mod hub;
 mod jmap;
 
-use std::sync::Arc;
 use dioxus::prelude::*;
-use cosmix_ui::app_init::{THEME, use_theme_css, handle_config_changed};
+use cosmix_ui::app_init::{THEME, use_theme_css, use_hub_client, use_hub_handler};
 use cosmix_ui::menu::{action_shortcut, menubar, standard_file_menu, separator, submenu, MenuBar, Shortcut};
 use components::{
     ComposeState, ComposeView, EmailList, EmailView, MailboxList,
@@ -41,42 +40,9 @@ fn app() -> Element {
     let mut compose: Signal<Option<ComposeState>> = use_signal(|| None);
     let mut refresh: Signal<u32> = use_signal(|| 0);
     let mut mobile_view: Signal<MobileView> = use_signal(|| MobileView::Emails);
-    let mut hub_client: Signal<Option<Arc<cosmix_client::HubClient>>> = use_signal(|| None);
-
-    // Connect to hub as "mail" service
-    use_effect(move || {
-        spawn(async move {
-            match cosmix_client::HubClient::connect_default("mail").await {
-                Ok(c) => {
-                    let client = Arc::new(c);
-                    tracing::info!("connected to cosmix-hub as 'mail'");
-                    hub_client.set(Some(client.clone()));
-
-                    // Register for config changes
-                    let _ = client.call(
-                        "configd",
-                        "config.watch",
-                        serde_json::json!({ "watcher": "mail" }),
-                    ).await;
-
-                    // Handle incoming commands
-                    let client2 = client.clone();
-                    tokio::spawn(async move {
-                        if let Some(mut rx) = client2.incoming_async().await {
-                            while let Some(cmd) = rx.recv().await {
-                                if cmd.command == "config.changed" {
-                                    handle_config_changed();
-                                    let _ = client2.respond(&cmd, 0, r#"{"status":"ok"}"#).await;
-                                }
-                            }
-                        }
-                    });
-                }
-                Err(_) => {
-                    tracing::debug!("hub not available, running standalone");
-                }
-            }
-        });
+    let hub_client = use_hub_client("mail");
+    use_hub_handler(hub_client, "mail", |cmd| {
+        Err(format!("unknown command: {}", cmd.command))
     });
 
     // Load mailboxes on startup

@@ -1,8 +1,6 @@
-use std::sync::Arc;
-
 use dioxus::prelude::*;
 use serde::Serialize;
-use cosmix_ui::app_init::{THEME, use_theme_css, use_theme_poll};
+use cosmix_ui::app_init::{THEME, use_theme_css, use_theme_poll, use_hub_client, use_hub_handler};
 use cosmix_ui::menu::{menubar, standard_file_menu, MenuBar};
 
 #[global_allocator]
@@ -74,34 +72,12 @@ fn home_dir() -> String {
 
 // ── Hub command handling ──
 
-async fn handle_hub_commands(client: Arc<cosmix_client::HubClient>) {
-    let mut rx = match client.incoming_async().await {
-        Some(rx) => rx,
-        None => return,
-    };
-
-    while let Some(cmd) = rx.recv().await {
-        let result = match cmd.command.as_str() {
-            "file.list" => handle_file_list(&cmd),
-            "file.read" => handle_file_read(&cmd),
-            "file.stat" => handle_file_stat(&cmd),
-            _ => Err(format!("unknown command: {}", cmd.command)),
-        };
-
-        match result {
-            Ok(body) => {
-                if let Err(e) = client.respond(&cmd, 0, &body).await {
-                    tracing::warn!("failed to send response: {e}");
-                }
-            }
-            Err(msg) => {
-                let err_body =
-                    serde_json::json!({"error": msg}).to_string();
-                if let Err(e) = client.respond(&cmd, 10, &err_body).await {
-                    tracing::warn!("failed to send error response: {e}");
-                }
-            }
-        }
+fn dispatch_command(cmd: &cosmix_client::IncomingCommand) -> Result<String, String> {
+    match cmd.command.as_str() {
+        "file.list" => handle_file_list(cmd),
+        "file.read" => handle_file_read(cmd),
+        "file.stat" => handle_file_stat(cmd),
+        _ => Err(format!("unknown command: {}", cmd.command)),
     }
 }
 
@@ -167,23 +143,9 @@ fn app() -> Element {
     let mut entries: Signal<Vec<FileEntry>> = use_signal(|| read_directory(&home));
     let mut selected: Signal<Option<usize>> = use_signal(|| None);
 
-    // Try to connect to hub on mount (non-blocking, silent failure)
-    use_effect(move || {
-        spawn(async move {
-            match cosmix_client::HubClient::connect_default("files").await {
-                Ok(client) => {
-                    let client = Arc::new(client);
-                    tracing::info!("connected to cosmix-hub as 'files'");
-                    tokio::spawn(handle_hub_commands(client));
-                }
-                Err(_) => {
-                    tracing::debug!("hub not available, running standalone");
-                }
-            }
-        });
-    });
-
-    // Poll config every 30s for theme changes
+    // Connect to hub and handle commands
+    let hub = use_hub_client("files");
+    use_hub_handler(hub, "files", dispatch_command);
     use_theme_poll(30);
 
     let app_menu = menubar(vec![standard_file_menu(vec![])]);

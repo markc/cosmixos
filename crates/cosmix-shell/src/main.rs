@@ -21,53 +21,15 @@ fn main() {
 }
 
 fn app() -> Element {
-    use std::sync::Arc;
-
-    let mut hub_client: Signal<Option<Arc<cosmix_client::HubClient>>> = use_signal(|| None);
-
-    // Connect to hub
-    use_effect(move || {
-        spawn(async move {
-            #[cfg(not(target_arch = "wasm32"))]
-            let client = cosmix_client::HubClient::connect_default("shell").await;
-            #[cfg(target_arch = "wasm32")]
-            let client = cosmix_client::HubClient::connect_anonymous_default();
-
-            match client {
-                Ok(c) => {
-                    let client = Arc::new(c);
-                    tracing::info!("connected to cosmix-hub as 'shell'");
-                    hub_client.set(Some(client.clone()));
-
-                    // Register for config changes
-                    let _ = client.call(
-                        "configd",
-                        "config.watch",
-                        serde_json::json!({ "watcher": "shell" }),
-                    ).await;
-
-                    // Handle incoming commands
-                    #[cfg(not(target_arch = "wasm32"))]
-                    {
-                        let client2 = client.clone();
-                        tokio::spawn(async move {
-                            if let Some(mut rx) = client2.incoming_async().await {
-                                while let Some(cmd) = rx.recv().await {
-                                    if cmd.command == "config.changed" {
-                                        cosmix_ui::app_init::handle_config_changed();
-                                        let _ = client2.respond(&cmd, 0, r#"{"status":"ok"}"#).await;
-                                    }
-                                }
-                            }
-                        });
-                    }
-                }
-                Err(e) => {
-                    tracing::debug!("hub not available: {e}");
-                }
-            }
+    #[cfg(not(target_arch = "wasm32"))]
+    let _hub_client = {
+        use cosmix_ui::app_init::{use_hub_client, use_hub_handler};
+        let hub_client = use_hub_client("shell");
+        use_hub_handler(hub_client, "shell", |cmd| {
+            Err(format!("unknown command: {}", cmd.command))
         });
-    });
+        hub_client
+    };
 
     // Poll config every 30s as fallback (desktop only)
     #[cfg(not(target_arch = "wasm32"))]

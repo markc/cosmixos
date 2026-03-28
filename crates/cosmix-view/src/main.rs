@@ -4,8 +4,7 @@ mod markdown;
 use dioxus::prelude::*;
 use dioxus::prelude::Key;
 use std::path::PathBuf;
-use std::sync::Arc;
-use cosmix_ui::app_init::{THEME, use_theme_css, use_theme_poll};
+use cosmix_ui::app_init::{THEME, use_theme_css, use_theme_poll, use_hub_client};
 use cosmix_ui::menu::{action_shortcut, amp_action, menubar, standard_file_menu, submenu, MenuBar, Shortcut};
 
 #[global_allocator]
@@ -87,21 +86,7 @@ fn app() -> Element {
         std::env::var("COSMIX_VIEW_PATH").ok().map(PathBuf::from)
     });
 
-    let mut hub_client: Signal<Option<Arc<cosmix_client::HubClient>>> = use_signal(|| None);
-
-    use_effect(move || {
-        spawn(async move {
-            match cosmix_client::HubClient::connect_default("view").await {
-                Ok(client) => {
-                    tracing::info!("Connected to hub as 'view'");
-                    hub_client.set(Some(Arc::new(client)));
-                }
-                Err(e) => {
-                    tracing::debug!("Hub not available, using standalone mode: {e}");
-                }
-            }
-        });
-    });
+    let hub_client = use_hub_client("view");
 
     // Poll config every 30s for theme changes
     use_theme_poll(30);

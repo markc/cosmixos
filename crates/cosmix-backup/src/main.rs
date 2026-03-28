@@ -13,7 +13,7 @@ use chrono::{DateTime, Utc};
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use cosmix_ui::app_init::{use_theme_css, use_theme_poll};
+use cosmix_ui::app_init::{use_hub_client, use_theme_css, use_theme_poll};
 use cosmix_ui::menu::{menubar, standard_file_menu, MenuBar};
 
 #[global_allocator]
@@ -278,24 +278,17 @@ fn app() -> Element {
     let mut view: Signal<View> = use_signal(|| View::Datastores);
     let mut error_msg: Signal<Option<String>> = use_signal(|| None);
     let mut loading = use_signal(|| false);
-    let mut hub_client: Signal<Option<Arc<cosmix_client::HubClient>>> = use_signal(|| None);
+    let hub_client = use_hub_client("backup");
 
-    // Connect to hub + load datastores
+    // Spawn async hub command handler when client connects
     use_effect(move || {
-        spawn(async move {
-            match cosmix_client::HubClient::connect_default("backup").await {
-                Ok(client) => {
-                    let client = Arc::new(client);
-                    hub_client.set(Some(client.clone()));
-                    tracing::info!("connected to cosmix-hub as 'backup'");
-                    tokio::spawn(handle_hub_commands(client));
-                }
-                Err(_) => {
-                    tracing::debug!("hub not available, running standalone");
-                }
-            }
-        });
+        if let Some(client) = hub_client() {
+            tokio::spawn(handle_hub_commands(client));
+        }
+    });
 
+    // Load datastores on startup
+    use_effect(move || {
         spawn(async move {
             loading.set(true);
             match fetch_datastores().await {

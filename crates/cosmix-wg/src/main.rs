@@ -8,11 +8,9 @@
 //! Reads WireGuard state via /proc/net and `wg show` parsing.
 //! Accessible from any browser on the mesh.
 
-use std::sync::Arc;
-
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
-use cosmix_ui::app_init::{THEME, use_theme_css, use_theme_poll};
+use cosmix_ui::app_init::{THEME, use_hub_client, use_hub_handler, use_theme_css, use_theme_poll};
 use cosmix_ui::menu::{menubar, standard_file_menu, MenuBar};
 
 #[global_allocator]
@@ -174,48 +172,27 @@ fn handshake_color(ts: u64) -> &'static str {
 
 // ── Hub command handling ──
 
-async fn handle_hub_commands(client: Arc<cosmix_client::HubClient>) {
-    let mut rx = match client.incoming_async().await {
-        Some(rx) => rx,
-        None => return,
-    };
-
-    while let Some(cmd) = rx.recv().await {
-        let result = match cmd.command.as_str() {
-            "wg.status" | "wg.interfaces" => {
-                let ifaces = gather_wg_status();
-                serde_json::to_string(&ifaces).map_err(|e| e.to_string())
-            }
-            "wg.peers" => {
-                let iface_filter = cmd
-                    .args
-                    .get("interface")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let ifaces = gather_wg_status();
-                let peers: Vec<&WgPeer> = ifaces
-                    .iter()
-                    .filter(|i| iface_filter.is_empty() || i.name == iface_filter)
-                    .flat_map(|i| i.peers.iter())
-                    .collect();
-                serde_json::to_string(&peers).map_err(|e| e.to_string())
-            }
-            _ => Err(format!("unknown command: {}", cmd.command)),
-        };
-
-        match result {
-            Ok(body) => {
-                if let Err(e) = client.respond(&cmd, 0, &body).await {
-                    tracing::warn!("failed to send response: {e}");
-                }
-            }
-            Err(msg) => {
-                let err_body = serde_json::json!({"error": msg}).to_string();
-                if let Err(e) = client.respond(&cmd, 10, &err_body).await {
-                    tracing::warn!("failed to send error response: {e}");
-                }
-            }
+fn dispatch_command(cmd: &cosmix_client::IncomingCommand) -> Result<String, String> {
+    match cmd.command.as_str() {
+        "wg.status" | "wg.interfaces" => {
+            let ifaces = gather_wg_status();
+            serde_json::to_string(&ifaces).map_err(|e| e.to_string())
         }
+        "wg.peers" => {
+            let iface_filter = cmd
+                .args
+                .get("interface")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let ifaces = gather_wg_status();
+            let peers: Vec<&WgPeer> = ifaces
+                .iter()
+                .filter(|i| iface_filter.is_empty() || i.name == iface_filter)
+                .flat_map(|i| i.peers.iter())
+                .collect();
+            serde_json::to_string(&peers).map_err(|e| e.to_string())
+        }
+        _ => Err(format!("unknown command: {}", cmd.command)),
     }
 }
 
@@ -223,28 +200,16 @@ async fn handle_hub_commands(client: Arc<cosmix_client::HubClient>) {
 
 fn app() -> Element {
     let mut interfaces: Signal<Vec<WgInterface>> = use_signal(Vec::new);
-    let mut hub_client: Signal<Option<Arc<cosmix_client::HubClient>>> = use_signal(|| None);
 
     // Poll config every 30s for theme changes
     use_theme_poll(30);
 
-    // Connect to hub + gather initial status
-    use_effect(move || {
-        spawn(async move {
-            match cosmix_client::HubClient::connect_default("wg").await {
-                Ok(client) => {
-                    let client = Arc::new(client);
-                    hub_client.set(Some(client.clone()));
-                    tracing::info!("connected to cosmix-hub as 'wg'");
-                    tokio::spawn(handle_hub_commands(client));
-                }
-                Err(_) => {
-                    tracing::debug!("hub not available, running standalone");
-                }
-            }
-        });
+    // Connect to hub + dispatch commands
+    let hub = use_hub_client("wg");
+    use_hub_handler(hub, "wg", dispatch_command);
 
-        // Gather status on startup + periodic refresh
+    // Gather status on startup + periodic refresh
+    use_effect(move || {
         interfaces.set(gather_wg_status());
         spawn(async move {
             loop {
