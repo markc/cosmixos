@@ -10,39 +10,15 @@ use std::sync::Arc;
 
 use dioxus::prelude::*;
 use serde::Deserialize;
+use cosmix_ui::app_init::{THEME, use_theme_css, use_theme_poll};
 use cosmix_ui::menu::{menubar, standard_file_menu, MenuBar};
-use cosmix_ui::theme::{ThemeParams, generate_css};
 
-// ── Theme params (loaded from config on desktop, default on WASM) ──
-
-static THEME: GlobalSignal<ThemeParams> = Signal::global(|| {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        cosmix_config::store::load()
-            .map(|s| ThemeParams {
-                hue: s.global.theme_hue,
-                dark: s.global.theme_dark,
-                font_size: s.global.font_size,
-            })
-            .unwrap_or_default()
-    }
-    #[cfg(target_arch = "wasm32")]
-    { ThemeParams::default() }
-});
+#[cfg(not(target_arch = "wasm32"))]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() {
-    #[cfg(not(target_arch = "wasm32"))]
-    cosmix_ui::desktop::init_linux_env();
-
-    #[cfg(feature = "desktop")]
-    {
-        let cfg = cosmix_ui::desktop::window_config("cosmix-mon", 720.0, 520.0);
-        LaunchBuilder::new().with_cfg(cfg).launch(app);
-        return;
-    }
-
-    #[allow(unreachable_code)]
-    dioxus::launch(app);
+    cosmix_ui::app_init::launch_desktop("cosmix-mon", 720.0, 520.0, app);
 }
 
 // ── Data types (deserialized from mond responses) ──
@@ -153,28 +129,7 @@ fn app() -> Element {
 
     // Poll config every 30s for theme changes (desktop only)
     #[cfg(not(target_arch = "wasm32"))]
-    use_effect(move || {
-        spawn(async move {
-            loop {
-                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                if let Ok(settings) = cosmix_config::store::load() {
-                    let new = ThemeParams {
-                        hue: settings.global.theme_hue,
-                        dark: settings.global.theme_dark,
-                        font_size: settings.global.font_size,
-                    };
-                    let current = THEME.read();
-                    if new.font_size != current.font_size
-                        || new.hue != current.hue
-                        || new.dark != current.dark
-                    {
-                        drop(current);
-                        *THEME.write() = new;
-                    }
-                }
-            }
-        });
-    });
+    use_theme_poll(30);
 
     let fetch_remote = move |_| {
         let node = remote_node();
@@ -205,8 +160,8 @@ fn app() -> Element {
         _ => {}
     };
 
-    let theme = THEME.read().clone();
-    let css = generate_css(&theme);
+    let css = use_theme_css();
+    let theme = THEME.read();
     let fs = theme.font_size;
     let fs_sm = fs.saturating_sub(2);
     let fs_lg = fs + 2;

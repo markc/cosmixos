@@ -25,7 +25,8 @@ anyhow.workspace = true
 uuid = { workspace = true, features = ["js"] }
 chrono.workspace = true
 pulldown-cmark.workspace = true
-cosmix_ui = { package = "cosmix-lib-ui", path = "../cosmix-lib-ui", features = ["hub"] }
+cosmix_ui = { package = "cosmix-lib-ui", path = "../cosmix-lib-ui", features = ["hub", "config"] }
+mimalloc.workspace = true
 cosmix_client = { package = "cosmix-lib-client", path = "../cosmix-lib-client" }
 cosmix_config = { package = "cosmix-lib-config", path = "../cosmix-lib-config" }
 

@@ -11,36 +11,14 @@
 use std::sync::Arc;
 
 use dioxus::prelude::*;
+use cosmix_ui::app_init::{THEME, use_theme_css, handle_config_changed};
 use cosmix_ui::menu::{action_shortcut, menubar, standard_file_menu, separator, submenu, MenuBar, Shortcut};
-use cosmix_ui::theme::{ThemeParams, generate_css};
 
-// ── Theme params (loaded from config, updated via hub config.changed) ──
-
-static THEME: GlobalSignal<ThemeParams> = Signal::global(|| {
-    cosmix_config::store::load()
-        .map(|s| ThemeParams {
-            hue: s.global.theme_hue,
-            dark: s.global.theme_dark,
-            font_size: s.global.font_size,
-        })
-        .unwrap_or_default()
-});
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() {
-    cosmix_ui::desktop::init_linux_env();
-
-    #[cfg(feature = "desktop")]
-    {
-        let cfg = cosmix_ui::desktop::window_config("cosmix-edit", 800.0, 600.0);
-        LaunchBuilder::new().with_cfg(cfg).launch(app);
-        return;
-    }
-
-    #[allow(unreachable_code)]
-    {
-        eprintln!("Desktop feature not enabled");
-        std::process::exit(1);
-    }
+    cosmix_ui::app_init::launch_desktop("cosmix-edit", 800.0, 600.0, app);
 }
 
 // ── Shared state for hub commands to update the editor ──
@@ -76,13 +54,7 @@ async fn handle_hub_commands(client: Arc<cosmix_client::HubClient>) {
             "edit.compose" => handle_edit_compose(&cmd),
             "edit.get" => Ok(r#"{"status": "ok"}"#.to_string()),
             "config.changed" => {
-                if let Ok(settings) = cosmix_config::store::load() {
-                    *THEME.write() = ThemeParams {
-                        hue: settings.global.theme_hue,
-                        dark: settings.global.theme_dark,
-                        font_size: settings.global.font_size,
-                    };
-                }
+                handle_config_changed();
                 Ok(r#"{"status": "ok"}"#.to_string())
             }
             _ => Err(format!("unknown command: {}", cmd.command)),
@@ -321,8 +293,8 @@ fn app() -> Element {
         .unwrap_or_else(|| format!("untitled{title_suffix}"));
 
     let lines = line_count();
-    let theme = THEME.read().clone();
-    let css = generate_css(&theme);
+    let css = use_theme_css();
+    let theme = THEME.read();
     let fs = theme.font_size;
     let fs_sm = fs.saturating_sub(2);
 

@@ -13,21 +13,14 @@ use chrono::{DateTime, Utc};
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use cosmix_ui::app_init::{use_theme_css, use_theme_poll};
+use cosmix_ui::menu::{menubar, standard_file_menu, MenuBar};
+
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn main() {
-    cosmix_ui::desktop::init_linux_env();
-
-    #[cfg(feature = "desktop")]
-    {
-        let cfg = cosmix_ui::desktop::window_config("cosmix-backup", 960.0, 640.0);
-        LaunchBuilder::new().with_cfg(cfg).launch(app);
-        return;
-    }
-
-    #[allow(unreachable_code)]
-    {
-        eprintln!("Desktop feature not enabled");
-        std::process::exit(1);
-    }
+    cosmix_ui::app_init::launch_desktop("cosmix-backup", 960.0, 640.0, app);
 }
 
 // ── PBS API client ──
@@ -194,23 +187,23 @@ fn usage_percent(used: u64, total: u64) -> f32 {
 
 fn pct_color(pct: f32) -> &'static str {
     if pct > 90.0 {
-        "#ef4444"
+        "var(--danger)"
     } else if pct > 70.0 {
-        "#f59e0b"
+        "var(--warning)"
     } else {
-        "#22c55e"
+        "var(--success)"
     }
 }
 
 fn task_status_color(status: &str) -> &'static str {
     if status == "OK" {
-        "#22c55e"
+        "var(--success)"
     } else if status.starts_with("WARNINGS") {
-        "#f59e0b"
+        "var(--warning)"
     } else if status.is_empty() {
-        "#60a5fa" // running
+        "var(--accent)" // running
     } else {
-        "#ef4444" // error
+        "var(--danger)" // error
     }
 }
 
@@ -276,6 +269,9 @@ enum View {
 }
 
 fn app() -> Element {
+    use_theme_poll(30);
+    let css = use_theme_css();
+
     let mut datastores: Signal<Vec<Datastore>> = use_signal(Vec::new);
     let mut snapshots: Signal<Vec<Snapshot>> = use_signal(Vec::new);
     let mut tasks: Signal<Vec<BackupTask>> = use_signal(Vec::new);
@@ -359,29 +355,37 @@ fn app() -> Element {
     };
 
     rsx! {
-        document::Style { "{CSS}" }
+        document::Style { "{css}" }
         div {
-            style: "width:100%; height:100vh; display:flex; flex-direction:column; background:{BG_BASE}; color:{TEXT_PRIMARY}; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif; font-size:13px;",
+            style: "width:100%; height:100vh; display:flex; flex-direction:column; background:var(--bg-primary); color:var(--fg-primary); font-family:var(--font-sans); font-size:13px;",
+
+            MenuBar {
+                menu: menubar(vec![standard_file_menu(vec![])]),
+                on_action: move |id: String| match id.as_str() {
+                    "quit" => std::process::exit(0),
+                    _ => {}
+                },
+            }
 
             // Header
             div {
-                style: "padding:12px 16px; background:{BG_SURFACE}; border-bottom:1px solid {BORDER}; display:flex; align-items:center; gap:12px;",
+                style: "padding:12px 16px; background:var(--bg-secondary); border-bottom:1px solid var(--border); display:flex; align-items:center; gap:12px;",
                 span { style: "font-weight:600; font-size:15px;", "Backup Dashboard" }
                 if loading() {
-                    span { style: "color:{TEXT_DIM}; font-size:12px;", "loading..." }
+                    span { style: "color:var(--fg-muted); font-size:12px;", "loading..." }
                 }
                 {
-                    let ds_bg = if matches!(*view.read(), View::Datastores) { BG_ELEVATED } else { BG_SURFACE };
-                    let tasks_bg = if matches!(*view.read(), View::Tasks) { BG_ELEVATED } else { BG_SURFACE };
+                    let ds_bg = if matches!(*view.read(), View::Datastores) { "var(--bg-tertiary)" } else { "var(--bg-secondary)" };
+                    let tasks_bg = if matches!(*view.read(), View::Tasks) { "var(--bg-tertiary)" } else { "var(--bg-secondary)" };
                     rsx! {
                         div { style: "margin-left:auto; display:flex; gap:6px;",
                             button {
-                                style: "background:{ds_bg}; border:1px solid {BORDER}; color:{TEXT_MUTED}; padding:4px 10px; border-radius:4px; cursor:pointer; font-size:12px;",
+                                style: "background:{ds_bg}; border:1px solid var(--border); color:var(--fg-muted); padding:4px 10px; border-radius:4px; cursor:pointer; font-size:12px;",
                                 onclick: show_datastores,
                                 "Datastores"
                             }
                             button {
-                                style: "background:{tasks_bg}; border:1px solid {BORDER}; color:{TEXT_MUTED}; padding:4px 10px; border-radius:4px; cursor:pointer; font-size:12px;",
+                                style: "background:{tasks_bg}; border:1px solid var(--border); color:var(--fg-muted); padding:4px 10px; border-radius:4px; cursor:pointer; font-size:12px;",
                                 onclick: show_tasks,
                                 "Tasks"
                             }
@@ -393,7 +397,7 @@ fn app() -> Element {
             // Error banner
             if let Some(ref err) = error_msg() {
                 div {
-                    style: "padding:8px 16px; background:#7f1d1d; color:#fca5a5; font-size:12px;",
+                    style: "padding:8px 16px; background:var(--danger); color:var(--bg-primary); font-size:12px;",
                     "{err}"
                 }
             }
@@ -409,12 +413,12 @@ fn app() -> Element {
                                     let store = ds.store.clone();
                                     rsx! {
                                         div {
-                                            style: "background:{BG_SURFACE}; border-radius:6px; padding:12px; cursor:pointer;",
+                                            style: "background:var(--bg-secondary); border-radius:6px; padding:12px; cursor:pointer;",
                                             onclick: move |_| show_snapshots(store.clone()),
 
                                             div { style: "display:flex; align-items:center; gap:12px; margin-bottom:8px;",
                                                 span { style: "font-weight:600; font-size:14px;", "{ds.store}" }
-                                                span { style: "color:{TEXT_DIM}; font-size:12px; margin-left:auto;",
+                                                span { style: "color:var(--fg-muted); font-size:12px; margin-left:auto;",
                                                     "{format_bytes(ds.used)} / {format_bytes(ds.total)}"
                                                 }
                                                 span { style: "color:{pct_color(pct)}; font-weight:500; font-size:12px;",
@@ -423,7 +427,7 @@ fn app() -> Element {
                                             }
 
                                             // Usage bar
-                                            div { style: "height:8px; background:{BG_ELEVATED}; border-radius:4px; overflow:hidden;",
+                                            div { style: "height:8px; background:var(--bg-tertiary); border-radius:4px; overflow:hidden;",
                                                 div { style: "height:100%; width:{pct}%; background:{pct_color(pct)}; border-radius:4px;" }
                                             }
                                         }
@@ -431,7 +435,7 @@ fn app() -> Element {
                                 }
                             }
                             if datastores().is_empty() && !loading() {
-                                div { style: "padding:24px; text-align:center; color:{TEXT_DIM};",
+                                div { style: "padding:24px; text-align:center; color:var(--fg-muted);",
                                     "No datastores found. Set PBS_API_URL and PBS_API_TOKEN environment variables."
                                 }
                             }
@@ -441,20 +445,20 @@ fn app() -> Element {
                         div {
                             div { style: "display:flex; align-items:center; gap:8px; margin-bottom:12px;",
                                 button {
-                                    style: "background:{BG_ELEVATED}; border:1px solid {BORDER}; color:{TEXT_MUTED}; padding:4px 10px; border-radius:4px; cursor:pointer; font-size:12px;",
+                                    style: "background:var(--bg-tertiary); border:1px solid var(--border); color:var(--fg-muted); padding:4px 10px; border-radius:4px; cursor:pointer; font-size:12px;",
                                     onclick: show_datastores,
                                     "< Datastores"
                                 }
                                 span { style: "font-weight:600;", "Snapshots: {store_name}" }
-                                span { style: "color:{TEXT_DIM}; font-size:12px;",
+                                span { style: "color:var(--fg-muted); font-size:12px;",
                                     "{snapshots().len()} snapshot(s)"
                                 }
                             }
 
-                            div { style: "background:{BG_SURFACE}; border-radius:6px; overflow:hidden;",
+                            div { style: "background:var(--bg-secondary); border-radius:6px; overflow:hidden;",
                                 // Header
                                 div {
-                                    style: "display:grid; grid-template-columns:100px 2fr 160px 100px; gap:8px; padding:8px 12px; background:{BG_ELEVATED}; font-size:11px; color:{TEXT_DIM}; text-transform:uppercase; letter-spacing:0.05em;",
+                                    style: "display:grid; grid-template-columns:100px 2fr 160px 100px; gap:8px; padding:8px 12px; background:var(--bg-tertiary); font-size:11px; color:var(--fg-muted); text-transform:uppercase; letter-spacing:0.05em;",
                                     span { "Type" }
                                     span { "ID" }
                                     span { "Time" }
@@ -462,13 +466,13 @@ fn app() -> Element {
                                 }
                                 for snap in snapshots().iter() {
                                     div {
-                                        style: "display:grid; grid-template-columns:100px 2fr 160px 100px; gap:8px; padding:6px 12px; border-top:1px solid {BORDER}; font-size:12px;",
+                                        style: "display:grid; grid-template-columns:100px 2fr 160px 100px; gap:8px; padding:6px 12px; border-top:1px solid var(--border); font-size:12px;",
                                         span { style: "color:#a78bfa; font-weight:500;", "{snap.backup_type}" }
-                                        span { style: "color:{TEXT_SECONDARY};", "{snap.backup_id}" }
-                                        span { style: "color:{TEXT_DIM}; font-size:11px; font-family:monospace;",
+                                        span { style: "color:var(--fg-secondary);", "{snap.backup_id}" }
+                                        span { style: "color:var(--fg-muted); font-size:11px; font-family:monospace;",
                                             "{format_timestamp(snap.backup_time)}"
                                         }
-                                        span { style: "color:{TEXT_DIM}; font-size:11px;",
+                                        span { style: "color:var(--fg-muted); font-size:11px;",
                                             if let Some(size) = snap.size {
                                                 "{format_bytes(size)}"
                                             } else {
@@ -478,7 +482,7 @@ fn app() -> Element {
                                     }
                                 }
                                 if snapshots().is_empty() {
-                                    div { style: "padding:16px; text-align:center; color:{TEXT_DIM};",
+                                    div { style: "padding:16px; text-align:center; color:var(--fg-muted);",
                                         "No snapshots found"
                                     }
                                 }
@@ -486,10 +490,10 @@ fn app() -> Element {
                         }
                     },
                     View::Tasks => rsx! {
-                        div { style: "background:{BG_SURFACE}; border-radius:6px; overflow:hidden;",
+                        div { style: "background:var(--bg-secondary); border-radius:6px; overflow:hidden;",
                             // Header
                             div {
-                                style: "display:grid; grid-template-columns:120px 2fr 160px 80px; gap:8px; padding:8px 12px; background:{BG_ELEVATED}; font-size:11px; color:{TEXT_DIM}; text-transform:uppercase; letter-spacing:0.05em;",
+                                style: "display:grid; grid-template-columns:120px 2fr 160px 80px; gap:8px; padding:8px 12px; background:var(--bg-tertiary); font-size:11px; color:var(--fg-muted); text-transform:uppercase; letter-spacing:0.05em;",
                                 span { "Type" }
                                 span { "Worker" }
                                 span { "Started" }
@@ -500,14 +504,14 @@ fn app() -> Element {
                                     let status = task.status.as_deref().unwrap_or("running");
                                     rsx! {
                                         div {
-                                            style: "display:grid; grid-template-columns:120px 2fr 160px 80px; gap:8px; padding:6px 12px; border-top:1px solid {BORDER}; font-size:12px;",
-                                            span { style: "color:{TEXT_SECONDARY}; font-weight:500;",
+                                            style: "display:grid; grid-template-columns:120px 2fr 160px 80px; gap:8px; padding:6px 12px; border-top:1px solid var(--border); font-size:12px;",
+                                            span { style: "color:var(--fg-secondary); font-weight:500;",
                                                 "{task.worker_type}"
                                             }
-                                            span { style: "color:{TEXT_DIM}; font-size:11px; font-family:monospace;",
+                                            span { style: "color:var(--fg-muted); font-size:11px; font-family:monospace;",
                                                 "{task.worker_id.as_deref().unwrap_or(\"-\")}"
                                             }
-                                            span { style: "color:{TEXT_DIM}; font-size:11px; font-family:monospace;",
+                                            span { style: "color:var(--fg-muted); font-size:11px; font-family:monospace;",
                                                 "{format_timestamp(task.starttime)}"
                                             }
                                             span { style: "color:{task_status_color(status)}; font-weight:500; font-size:11px;",
@@ -518,7 +522,7 @@ fn app() -> Element {
                                 }
                             }
                             if tasks().is_empty() {
-                                div { style: "padding:16px; text-align:center; color:{TEXT_DIM};",
+                                div { style: "padding:16px; text-align:center; color:var(--fg-muted);",
                                     "No recent tasks"
                                 }
                             }
@@ -529,28 +533,3 @@ fn app() -> Element {
         }
     }
 }
-
-// ── Theme ──
-
-const BG_BASE: &str = cosmix_ui::theme::BG_BASE;
-const BG_SURFACE: &str = cosmix_ui::theme::BG_SURFACE;
-const BG_ELEVATED: &str = cosmix_ui::theme::BG_ELEVATED;
-const BORDER: &str = cosmix_ui::theme::BORDER_DEFAULT;
-const TEXT_PRIMARY: &str = cosmix_ui::theme::TEXT_PRIMARY;
-const TEXT_SECONDARY: &str = cosmix_ui::theme::TEXT_SECONDARY;
-const TEXT_MUTED: &str = cosmix_ui::theme::TEXT_MUTED;
-const TEXT_DIM: &str = cosmix_ui::theme::TEXT_DIM;
-
-const CSS: &str = r#"
-html, body, #main {
-    margin: 0; padding: 0;
-    width: 100%; height: 100%;
-    overflow: hidden;
-}
-::-webkit-scrollbar { width: 8px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #374151; border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: #4b5563; }
-button:hover { background: #374151 !important; }
-div[style*="cursor:pointer"]:hover { background: #1e293b !important; }
-"#;

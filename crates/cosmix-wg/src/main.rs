@@ -12,22 +12,14 @@ use std::sync::Arc;
 
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
+use cosmix_ui::app_init::{THEME, use_theme_css, use_theme_poll};
+use cosmix_ui::menu::{menubar, standard_file_menu, MenuBar};
+
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() {
-    cosmix_ui::desktop::init_linux_env();
-
-    #[cfg(feature = "desktop")]
-    {
-        let cfg = cosmix_ui::desktop::window_config("cosmix-wg", 900.0, 600.0);
-        LaunchBuilder::new().with_cfg(cfg).launch(app);
-        return;
-    }
-
-    #[allow(unreachable_code)]
-    {
-        eprintln!("Desktop feature not enabled");
-        std::process::exit(1);
-    }
+    cosmix_ui::app_init::launch_desktop("cosmix-wg", 900.0, 600.0, app);
 }
 
 // ── WireGuard data ──
@@ -164,7 +156,7 @@ fn format_handshake(ts: u64) -> String {
 
 fn handshake_color(ts: u64) -> &'static str {
     if ts == 0 {
-        return TEXT_DIM;
+        return "var(--fg-muted)";
     }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -233,6 +225,9 @@ fn app() -> Element {
     let mut interfaces: Signal<Vec<WgInterface>> = use_signal(Vec::new);
     let mut hub_client: Signal<Option<Arc<cosmix_client::HubClient>>> = use_signal(|| None);
 
+    // Poll config every 30s for theme changes
+    use_theme_poll(30);
+
     // Connect to hub + gather initial status
     use_effect(move || {
         spawn(async move {
@@ -261,21 +256,36 @@ fn app() -> Element {
 
     let total_peers: usize = interfaces().iter().map(|i| i.peers.len()).sum();
 
+    let css = use_theme_css();
+    let theme = THEME.read();
+    let fs = theme.font_size;
+    let fs_sm = fs.saturating_sub(2);
+
+    let app_menu = menubar(vec![standard_file_menu(vec![])]);
+
     rsx! {
-        document::Style { "{CSS}" }
+        document::Style { "{css}" }
         div {
-            style: "width:100%; height:100vh; display:flex; flex-direction:column; background:{BG_BASE}; color:{TEXT_PRIMARY}; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif; font-size:13px;",
+            style: "width:100%; height:100vh; display:flex; flex-direction:column; background:var(--bg-primary); color:var(--fg-primary); font-family:var(--font-sans); font-size:{fs}px;",
+
+            MenuBar {
+                menu: app_menu,
+                on_action: move |id: String| match id.as_str() {
+                    "quit" => std::process::exit(0),
+                    _ => {}
+                },
+            }
 
             // Header
             div {
-                style: "padding:12px 16px; background:{BG_SURFACE}; border-bottom:1px solid {BORDER}; display:flex; align-items:center; gap:12px;",
-                span { style: "font-weight:600; font-size:15px;", "WireGuard Mesh" }
-                span { style: "color:{TEXT_DIM}; font-size:12px;",
+                style: "padding:12px 16px; background:var(--bg-secondary); border-bottom:1px solid var(--border); display:flex; align-items:center; gap:12px;",
+                span { style: "font-weight:600; font-size:var(--font-size-lg);", "WireGuard Mesh" }
+                span { style: "color:var(--fg-muted); font-size:{fs_sm}px;",
                     "{interfaces().len()} interface(s), {total_peers} peer(s)"
                 }
                 div { style: "margin-left:auto;",
                     button {
-                        style: "background:{BG_ELEVATED}; border:1px solid {BORDER}; color:{TEXT_MUTED}; padding:4px 10px; border-radius:4px; cursor:pointer; font-size:12px;",
+                        style: "background:var(--bg-tertiary); border:1px solid var(--border); color:var(--fg-muted); padding:4px 10px; border-radius:4px; cursor:pointer; font-size:{fs_sm}px;",
                         onclick: move |_| interfaces.set(gather_wg_status()),
                         "Refresh"
                     }
@@ -285,18 +295,18 @@ fn app() -> Element {
             // Content
             div { style: "flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:16px;",
                 for iface in interfaces().iter() {
-                    div { style: "background:{BG_SURFACE}; border-radius:6px; overflow:hidden;",
+                    div { style: "background:var(--bg-secondary); border-radius:6px; overflow:hidden;",
                         // Interface header
                         div {
-                            style: "padding:10px 12px; display:flex; align-items:center; gap:12px; border-bottom:1px solid {BORDER};",
-                            span { style: "font-weight:600; color:#60a5fa;", "{iface.name}" }
-                            span { style: "color:{TEXT_DIM}; font-size:11px; font-family:monospace;",
+                            style: "padding:10px 12px; display:flex; align-items:center; gap:12px; border-bottom:1px solid var(--border);",
+                            span { style: "font-weight:600; color:var(--accent);", "{iface.name}" }
+                            span { style: "color:var(--fg-muted); font-size:var(--font-size-sm); font-family:monospace;",
                                 "port {iface.listen_port}"
                             }
-                            span { style: "color:{TEXT_DIM}; font-size:11px; font-family:monospace;",
+                            span { style: "color:var(--fg-muted); font-size:var(--font-size-sm); font-family:monospace;",
                                 "pubkey {short_key(&iface.public_key)}"
                             }
-                            span { style: "color:{TEXT_DIM}; font-size:11px;",
+                            span { style: "color:var(--fg-muted); font-size:var(--font-size-sm);",
                                 "{iface.peers.len()} peers"
                             }
                         }
@@ -304,7 +314,7 @@ fn app() -> Element {
                         // Peer table header
                         if !iface.peers.is_empty() {
                             div {
-                                style: "display:grid; grid-template-columns:160px 160px 2fr 100px 100px 100px; gap:8px; padding:6px 12px; background:{BG_ELEVATED}; font-size:11px; color:{TEXT_DIM}; text-transform:uppercase; letter-spacing:0.05em;",
+                                style: "display:grid; grid-template-columns:160px 160px 2fr 100px 100px 100px; gap:8px; padding:6px 12px; background:var(--bg-tertiary); font-size:var(--font-size-sm); color:var(--fg-muted); text-transform:uppercase; letter-spacing:0.05em;",
                                 span { "Public Key" }
                                 span { "Endpoint" }
                                 span { "Allowed IPs" }
@@ -317,41 +327,41 @@ fn app() -> Element {
                         // Peers
                         for peer in iface.peers.iter() {
                             div {
-                                style: "display:grid; grid-template-columns:160px 160px 2fr 100px 100px 100px; gap:8px; padding:6px 12px; border-top:1px solid {BORDER}; font-size:12px;",
-                                span { style: "font-family:monospace; font-size:11px; color:{TEXT_SECONDARY}; overflow:hidden; text-overflow:ellipsis;",
+                                style: "display:grid; grid-template-columns:160px 160px 2fr 100px 100px 100px; gap:8px; padding:6px 12px; border-top:1px solid var(--border); font-size:{fs_sm}px;",
+                                span { style: "font-family:monospace; font-size:var(--font-size-sm); color:var(--fg-secondary); overflow:hidden; text-overflow:ellipsis;",
                                     "{short_key(&peer.public_key)}"
                                 }
-                                span { style: "font-family:monospace; font-size:11px; color:{TEXT_MUTED};",
+                                span { style: "font-family:monospace; font-size:var(--font-size-sm); color:var(--fg-muted);",
                                     if peer.endpoint.is_empty() || peer.endpoint == "(none)" {
                                         "-"
                                     } else {
                                         "{peer.endpoint}"
                                     }
                                 }
-                                span { style: "font-family:monospace; font-size:11px; color:{TEXT_DIM};",
+                                span { style: "font-family:monospace; font-size:var(--font-size-sm); color:var(--fg-muted);",
                                     "{peer.allowed_ips.join(\", \")}"
                                 }
-                                span { style: "font-size:11px; color:{handshake_color(peer.latest_handshake)};",
+                                span { style: "font-size:var(--font-size-sm); color:{handshake_color(peer.latest_handshake)};",
                                     "{format_handshake(peer.latest_handshake)}"
                                 }
-                                span { style: "font-size:11px; color:{TEXT_DIM};",
+                                span { style: "font-size:var(--font-size-sm); color:var(--fg-muted);",
                                     "{format_bytes(peer.transfer_rx)}"
                                 }
-                                span { style: "font-size:11px; color:{TEXT_DIM};",
+                                span { style: "font-size:var(--font-size-sm); color:var(--fg-muted);",
                                     "{format_bytes(peer.transfer_tx)}"
                                 }
                             }
                         }
 
                         if iface.peers.is_empty() {
-                            div { style: "padding:16px; text-align:center; color:{TEXT_DIM};",
+                            div { style: "padding:16px; text-align:center; color:var(--fg-muted);",
                                 "No peers configured"
                             }
                         }
                     }
                 }
                 if interfaces().is_empty() {
-                    div { style: "padding:24px; text-align:center; color:{TEXT_DIM};",
+                    div { style: "padding:24px; text-align:center; color:var(--fg-muted);",
                         "No WireGuard interfaces found. Is WireGuard running?"
                     }
                 }
@@ -367,27 +377,3 @@ fn short_key(key: &str) -> String {
         key.to_string()
     }
 }
-
-// ── Theme ──
-
-const BG_BASE: &str = cosmix_ui::theme::BG_BASE;
-const BG_SURFACE: &str = cosmix_ui::theme::BG_SURFACE;
-const BG_ELEVATED: &str = cosmix_ui::theme::BG_ELEVATED;
-const BORDER: &str = cosmix_ui::theme::BORDER_DEFAULT;
-const TEXT_PRIMARY: &str = cosmix_ui::theme::TEXT_PRIMARY;
-const TEXT_SECONDARY: &str = cosmix_ui::theme::TEXT_SECONDARY;
-const TEXT_MUTED: &str = cosmix_ui::theme::TEXT_MUTED;
-const TEXT_DIM: &str = cosmix_ui::theme::TEXT_DIM;
-
-const CSS: &str = r#"
-html, body, #main {
-    margin: 0; padding: 0;
-    width: 100%; height: 100%;
-    overflow: hidden;
-}
-::-webkit-scrollbar { width: 8px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #374151; border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: #4b5563; }
-button:hover { background: #374151 !important; }
-"#;

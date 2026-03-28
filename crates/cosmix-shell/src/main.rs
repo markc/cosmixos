@@ -8,9 +8,6 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() {
     #[cfg(not(target_arch = "wasm32"))]
-    cosmix_ui::desktop::init_linux_env();
-
-    #[cfg(not(target_arch = "wasm32"))]
     {
         tracing_subscriber::fmt()
             .with_env_filter(
@@ -20,15 +17,7 @@ fn main() {
             .init();
     }
 
-    #[cfg(feature = "desktop")]
-    {
-        let cfg = cosmix_ui::desktop::window_config("cosmix-shell", 1400.0, 900.0);
-        LaunchBuilder::new().with_cfg(cfg).launch(app);
-        return;
-    }
-
-    #[allow(unreachable_code)]
-    dioxus::launch(app);
+    cosmix_ui::app_init::launch_desktop("cosmix-shell", 1400.0, 900.0, app);
 }
 
 fn app() -> Element {
@@ -65,13 +54,7 @@ fn app() -> Element {
                             if let Some(mut rx) = client2.incoming_async().await {
                                 while let Some(cmd) = rx.recv().await {
                                     if cmd.command == "config.changed" {
-                                        if let Ok(settings) = cosmix_config::store::load() {
-                                            *cosmix_shell::THEME.write() = cosmix_ui::theme::ThemeParams {
-                                                hue: settings.global.theme_hue,
-                                                dark: settings.global.theme_dark,
-                                                font_size: settings.global.font_size,
-                                            };
-                                        }
+                                        cosmix_ui::app_init::handle_config_changed();
                                         let _ = client2.respond(&cmd, 0, r#"{"status":"ok"}"#).await;
                                     }
                                 }
@@ -88,28 +71,7 @@ fn app() -> Element {
 
     // Poll config every 30s as fallback (desktop only)
     #[cfg(not(target_arch = "wasm32"))]
-    use_effect(move || {
-        spawn(async move {
-            loop {
-                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                if let Ok(settings) = cosmix_config::store::load() {
-                    let new = cosmix_ui::theme::ThemeParams {
-                        hue: settings.global.theme_hue,
-                        dark: settings.global.theme_dark,
-                        font_size: settings.global.font_size,
-                    };
-                    let current = cosmix_shell::THEME.read();
-                    if new.font_size != current.font_size
-                        || new.hue != current.hue
-                        || new.dark != current.dark
-                    {
-                        drop(current);
-                        *cosmix_shell::THEME.write() = new;
-                    }
-                }
-            }
-        });
-    });
+    cosmix_ui::app_init::use_theme_poll(30);
 
     cosmix_shell::shell_app()
 }

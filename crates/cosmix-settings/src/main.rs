@@ -5,41 +5,14 @@
 //! Save writes to `~/.config/cosmix/settings.toml` via cosmix-config.
 
 use dioxus::prelude::*;
-use cosmix_ui::theme::{ThemeParams, generate_css};
+use cosmix_ui::app_init::{THEME, use_theme_css};
+use cosmix_ui::theme::ThemeParams;
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-// ── Theme params (loaded from config) ──
-
-static THEME: GlobalSignal<ThemeParams> = Signal::global(|| {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        cosmix_config::store::load()
-            .map(|s| ThemeParams {
-                hue: s.global.theme_hue,
-                dark: s.global.theme_dark,
-                font_size: s.global.font_size,
-            })
-            .unwrap_or_default()
-    }
-    #[cfg(target_arch = "wasm32")]
-    { ThemeParams::default() }
-});
-
 fn main() {
-    #[cfg(not(target_arch = "wasm32"))]
-    cosmix_ui::desktop::init_linux_env();
-
-    #[cfg(feature = "desktop")]
-    {
-        let cfg = cosmix_ui::desktop::window_config("Cosmix Settings", 800.0, 600.0);
-        LaunchBuilder::new().with_cfg(cfg).launch(app);
-        return;
-    }
-
-    #[allow(unreachable_code)]
-    dioxus::launch(app);
+    cosmix_ui::app_init::launch_desktop("Cosmix Settings", 800.0, 600.0, app);
 }
 
 // ── Section metadata ──
@@ -129,8 +102,7 @@ fn app() -> Element {
         }
     };
 
-    let theme = THEME.read().clone();
-    let css = generate_css(&theme);
+    let css = use_theme_css();
 
     rsx! {
         document::Style { "{css}" }

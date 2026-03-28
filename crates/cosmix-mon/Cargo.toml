@@ -19,7 +19,8 @@ web = ["dioxus/web"]
 dioxus = { version = "0.7", features = [] }
 dioxus-desktop = { version = "0.7", optional = true }
 tao = { version = "0.34", default-features = false, optional = true }
-cosmix_ui = { package = "cosmix-lib-ui", path = "../cosmix-lib-ui", default-features = false }
+cosmix_ui = { package = "cosmix-lib-ui", path = "../cosmix-lib-ui", default-features = false, features = ["config"] }
+mimalloc.workspace = true
 cosmix_client = { package = "cosmix-lib-client", path = "../cosmix-lib-client" }
 serde.workspace = true
 serde_json.workspace = true

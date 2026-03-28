@@ -13,6 +13,7 @@ use std::io::Read;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use clap::{Parser, Subcommand};
+use cosmix_ui::app_init::use_theme_css;
 use dioxus::prelude::*;
 
 #[global_allocator]
@@ -130,14 +131,18 @@ fn exit(code: i32) {
 // ── UI ──
 
 fn app() -> Element {
+    let css = use_theme_css();
     let mode = DIALOG_MODE.get().unwrap();
 
-    match mode {
-        Mode::TextInfo { .. } => text_info_view(),
-        Mode::Info { text, .. } => message_view(text, "info"),
-        Mode::Error { text, .. } => message_view(text, "error"),
-        Mode::Confirm { text, .. } => confirm_view(text),
-        Mode::Input { text, entry_text, .. } => input_view(text, entry_text),
+    rsx! {
+        document::Style { "{css}" }
+        {match mode {
+            Mode::TextInfo { .. } => text_info_view(),
+            Mode::Info { text, .. } => message_view(text, "info"),
+            Mode::Error { text, .. } => message_view(text, "error"),
+            Mode::Confirm { text, .. } => confirm_view(text),
+            Mode::Input { text, entry_text, .. } => input_view(text, entry_text),
+        }}
     }
 }
 
@@ -145,9 +150,8 @@ fn text_info_view() -> Element {
     let text = STDIN_TEXT.get().map(|s| s.as_str()).unwrap_or("");
 
     rsx! {
-        document::Style { "{CSS}" }
         div {
-            style: "width:100%;height:100vh;display:flex;flex-direction:column;background:{BG_BASE};color:{TEXT_PRIMARY};font-family:monospace;",
+            style: "width:100%;height:100vh;display:flex;flex-direction:column;background:var(--bg-primary);color:var(--fg-primary);font-family:monospace;",
 
             // Scrollable text area
             pre {
@@ -157,7 +161,7 @@ fn text_info_view() -> Element {
 
             // Button bar
             div {
-                style: "padding:8px 12px;background:{BG_SURFACE};border-top:1px solid {BORDER};display:flex;justify-content:flex-end;",
+                style: "padding:8px 12px;background:var(--bg-secondary);border-top:1px solid var(--border);display:flex;justify-content:flex-end;",
                 button {
                     style: "{BTN_STYLE}",
                     onclick: move |_| {
@@ -175,9 +179,8 @@ fn message_view(text: &str, kind: &str) -> Element {
     let icon = if kind == "error" { "✕" } else { "ℹ" };
 
     rsx! {
-        document::Style { "{CSS}" }
         div {
-            style: "width:100%;height:100vh;display:flex;flex-direction:column;background:{BG_BASE};color:{TEXT_PRIMARY};font-family:sans-serif;",
+            style: "width:100%;height:100vh;display:flex;flex-direction:column;background:var(--bg-primary);color:var(--fg-primary);font-family:sans-serif;",
 
             div {
                 style: "flex:1;display:flex;align-items:center;padding:24px;gap:16px;",
@@ -186,7 +189,7 @@ fn message_view(text: &str, kind: &str) -> Element {
             }
 
             div {
-                style: "padding:8px 12px;background:{BG_SURFACE};border-top:1px solid {BORDER};display:flex;justify-content:flex-end;",
+                style: "padding:8px 12px;background:var(--bg-secondary);border-top:1px solid var(--border);display:flex;justify-content:flex-end;",
                 button {
                     style: "{BTN_STYLE}",
                     onclick: move |_| {
@@ -201,9 +204,8 @@ fn message_view(text: &str, kind: &str) -> Element {
 
 fn confirm_view(text: &str) -> Element {
     rsx! {
-        document::Style { "{CSS}" }
         div {
-            style: "width:100%;height:100vh;display:flex;flex-direction:column;background:{BG_BASE};color:{TEXT_PRIMARY};font-family:sans-serif;",
+            style: "width:100%;height:100vh;display:flex;flex-direction:column;background:var(--bg-primary);color:var(--fg-primary);font-family:sans-serif;",
 
             div {
                 style: "flex:1;display:flex;align-items:center;padding:24px;gap:16px;",
@@ -212,7 +214,7 @@ fn confirm_view(text: &str) -> Element {
             }
 
             div {
-                style: "padding:8px 12px;background:{BG_SURFACE};border-top:1px solid {BORDER};display:flex;justify-content:flex-end;gap:8px;",
+                style: "padding:8px 12px;background:var(--bg-secondary);border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px;",
                 button {
                     style: "{BTN_STYLE}",
                     onclick: move |_| {
@@ -241,9 +243,8 @@ fn input_view(text: &str, default: &str) -> Element {
     };
 
     rsx! {
-        document::Style { "{CSS}" }
         div {
-            style: "width:100%;height:100vh;display:flex;flex-direction:column;background:{BG_BASE};color:{TEXT_PRIMARY};font-family:sans-serif;",
+            style: "width:100%;height:100vh;display:flex;flex-direction:column;background:var(--bg-primary);color:var(--fg-primary);font-family:sans-serif;",
 
             div {
                 style: "flex:1;display:flex;flex-direction:column;justify-content:center;padding:24px;gap:12px;",
@@ -251,7 +252,7 @@ fn input_view(text: &str, default: &str) -> Element {
                     label { style: "font-size:14px;", "{text}" }
                 }
                 input {
-                    style: "background:{BG_ELEVATED};border:1px solid {BORDER};color:{TEXT_PRIMARY};padding:8px 12px;border-radius:4px;font-size:14px;outline:none;",
+                    style: "background:var(--bg-tertiary);border:1px solid var(--border);color:var(--fg-primary);padding:8px 12px;border-radius:4px;font-size:14px;outline:none;",
                     value: "{value}",
                     autofocus: true,
                     oninput: move |e| value.set(e.value()),
@@ -265,7 +266,7 @@ fn input_view(text: &str, default: &str) -> Element {
             }
 
             div {
-                style: "padding:8px 12px;background:{BG_SURFACE};border-top:1px solid {BORDER};display:flex;justify-content:flex-end;gap:8px;",
+                style: "padding:8px 12px;background:var(--bg-secondary);border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px;",
                 button {
                     style: "{BTN_STYLE}",
                     onclick: move |_| {
@@ -285,25 +286,5 @@ fn input_view(text: &str, default: &str) -> Element {
 
 // ── Theme ──
 
-const BG_BASE: &str = cosmix_ui::theme::BG_BASE;
-const BG_SURFACE: &str = cosmix_ui::theme::BG_SURFACE;
-const BG_ELEVATED: &str = cosmix_ui::theme::BG_ELEVATED;
-const BORDER: &str = cosmix_ui::theme::BORDER_DEFAULT;
-const TEXT_PRIMARY: &str = cosmix_ui::theme::TEXT_PRIMARY;
-
-const BTN_STYLE: &str = "background:#374151;border:1px solid #4b5563;color:#d1d5db;padding:6px 16px;border-radius:4px;cursor:pointer;font-size:13px;";
-const BTN_PRIMARY_STYLE: &str = "background:#2563eb;border:1px solid #3b82f6;color:#fff;padding:6px 16px;border-radius:4px;cursor:pointer;font-size:13px;";
-
-const CSS: &str = r#"
-html, body, #main {
-    margin: 0; padding: 0;
-    width: 100%; height: 100%;
-    overflow: hidden;
-}
-button:hover { filter: brightness(1.2); }
-input:focus { border-color: #3b82f6 !important; }
-::-webkit-scrollbar { width: 8px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #374151; border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: #4b5563; }
-"#;
+const BTN_STYLE: &str = "background:var(--bg-tertiary);border:1px solid var(--border);color:var(--fg-muted);padding:6px 16px;border-radius:var(--radius-sm);cursor:pointer;font-size:13px;";
+const BTN_PRIMARY_STYLE: &str = "background:var(--accent);border:1px solid var(--accent-hover);color:var(--accent-fg);padding:6px 16px;border-radius:var(--radius-sm);cursor:pointer;font-size:13px;";

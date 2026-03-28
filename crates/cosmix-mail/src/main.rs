@@ -4,29 +4,20 @@ mod jmap;
 
 use std::sync::Arc;
 use dioxus::prelude::*;
+use cosmix_ui::app_init::{THEME, use_theme_css, handle_config_changed};
 use cosmix_ui::menu::{action_shortcut, menubar, standard_file_menu, separator, submenu, MenuBar, Shortcut};
-use cosmix_ui::theme::{ThemeParams, generate_css};
 use components::{
     ComposeState, ComposeView, EmailList, EmailView, MailboxList,
     compose_forward, compose_reply,
 };
 use jmap::{Email, JmapClient, Mailbox};
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 pub const JMAP_URL: &str = "https://mail.kanary.org:8443";
 pub const JMAP_USER: &str = "markc@kanary.org";
 pub const JMAP_PASS: &str = "changeme123";
-
-// ── Theme ──
-
-static THEME: GlobalSignal<ThemeParams> = Signal::global(|| {
-    cosmix_config::store::load()
-        .map(|s| ThemeParams {
-            hue: s.global.theme_hue,
-            dark: s.global.theme_dark,
-            font_size: s.global.font_size,
-        })
-        .unwrap_or_default()
-});
 
 /// Which panel is visible on mobile (<640px).
 #[derive(Clone, Copy, PartialEq)]
@@ -37,17 +28,7 @@ enum MobileView {
 }
 
 fn main() {
-    cosmix_ui::desktop::init_linux_env();
-
-    #[cfg(feature = "desktop")]
-    {
-        let cfg = cosmix_ui::desktop::window_config("Cosmix Mail", 1400.0, 900.0);
-        LaunchBuilder::new().with_cfg(cfg).launch(app);
-        return;
-    }
-
-    #[allow(unreachable_code)]
-    dioxus::launch(app);
+    cosmix_ui::app_init::launch_desktop("Cosmix Mail", 1400.0, 900.0, app);
 }
 
 fn app() -> Element {
@@ -84,13 +65,7 @@ fn app() -> Element {
                         if let Some(mut rx) = client2.incoming_async().await {
                             while let Some(cmd) = rx.recv().await {
                                 if cmd.command == "config.changed" {
-                                    if let Ok(settings) = cosmix_config::store::load() {
-                                        *THEME.write() = ThemeParams {
-                                            hue: settings.global.theme_hue,
-                                            dark: settings.global.theme_dark,
-                                            font_size: settings.global.font_size,
-                                        };
-                                    }
+                                    handle_config_changed();
                                     let _ = client2.respond(&cmd, 0, r#"{"status":"ok"}"#).await;
                                 }
                             }
@@ -163,9 +138,8 @@ fn app() -> Element {
     let emails_class = if mv == MobileView::Emails { "pane-emails mobile-active" } else { "pane-emails" };
     let reader_class = if mv == MobileView::Reader { "pane-reader mobile-active" } else { "pane-reader" };
 
-    let theme = THEME.read().clone();
-    let theme_css = generate_css(&theme);
-    let fs = theme.font_size;
+    let theme_css = use_theme_css();
+    let fs = THEME.read().font_size;
 
     let app_menu = menubar(vec![
         standard_file_menu(vec![

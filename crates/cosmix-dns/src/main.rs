@@ -10,25 +10,17 @@
 
 use std::path::PathBuf;
 
+use cosmix_ui::app_init::{use_theme_css, use_theme_poll};
+use cosmix_ui::menu::{menubar, standard_file_menu, MenuBar};
 use dioxus::prelude::*;
 use hickory_proto::rr::Name;
 use hickory_proto::serialize::txt::Parser;
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn main() {
-    cosmix_ui::desktop::init_linux_env();
-
-    #[cfg(feature = "desktop")]
-    {
-        let cfg = cosmix_ui::desktop::window_config("cosmix-dns", 960.0, 640.0);
-        LaunchBuilder::new().with_cfg(cfg).launch(app);
-        return;
-    }
-
-    #[allow(unreachable_code)]
-    {
-        eprintln!("Desktop feature not enabled");
-        std::process::exit(1);
-    }
+    cosmix_ui::app_init::launch_desktop("cosmix-dns", 960.0, 640.0, app);
 }
 
 // ── Zone data ──
@@ -202,6 +194,9 @@ enum View {
 }
 
 fn app() -> Element {
+    use_theme_poll(30);
+    let css = use_theme_css();
+
     let mut zones: Signal<Vec<ZoneInfo>> = use_signal(Vec::new);
     let mut records: Signal<Vec<RecordEntry>> = use_signal(Vec::new);
     let mut zone_origin: Signal<String> = use_signal(String::new);
@@ -280,21 +275,29 @@ fn app() -> Element {
     let zdir = zone_dir().display().to_string();
 
     rsx! {
-        document::Style { "{CSS}" }
+        document::Style { "{css}" }
         div {
-            style: "width:100%; height:100vh; display:flex; flex-direction:column; background:{BG_BASE}; color:{TEXT_PRIMARY}; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif; font-size:13px;",
+            style: "width:100%; height:100vh; display:flex; flex-direction:column; background:var(--bg-primary); color:var(--fg-primary); font-family:var(--font-sans); font-size:13px;",
+
+            MenuBar {
+                menu: menubar(vec![standard_file_menu(vec![])]),
+                on_action: move |id: String| match id.as_str() {
+                    "quit" => std::process::exit(0),
+                    _ => {}
+                },
+            }
 
             // Header
             div {
-                style: "padding:12px 16px; background:{BG_SURFACE}; border-bottom:1px solid {BORDER}; display:flex; align-items:center; gap:12px;",
+                style: "padding:12px 16px; background:var(--bg-secondary); border-bottom:1px solid var(--border); display:flex; align-items:center; gap:12px;",
                 match &*view.read() {
                     View::ZoneList => rsx! {
                         span { style: "font-weight:600; font-size:15px;", "DNS Zones" }
-                        span { style: "color:{TEXT_DIM}; font-size:12px;", "{zdir}" }
+                        span { style: "color:var(--fg-muted); font-size:12px;", "{zdir}" }
                     },
                     View::ZoneRecords(_) => rsx! {
                         button {
-                            style: "background:{BG_ELEVATED}; border:1px solid {BORDER}; color:{TEXT_MUTED}; padding:4px 10px; border-radius:4px; cursor:pointer; font-size:12px;",
+                            style: "background:var(--bg-tertiary); border:1px solid var(--border); color:var(--fg-muted); padding:4px 10px; border-radius:4px; cursor:pointer; font-size:12px;",
                             onclick: back_to_list,
                             "< Zones"
                         }
@@ -326,7 +329,7 @@ fn app() -> Element {
                             let f = f.clone();
                             rsx! {
                                 button {
-                                    style: "background:{BG_ELEVATED}; border:1px solid {BORDER}; color:{TEXT_MUTED}; padding:4px 10px; border-radius:4px; cursor:pointer; font-size:12px;",
+                                    style: "background:var(--bg-tertiary); border:1px solid var(--border); color:var(--fg-muted); padding:4px 10px; border-radius:4px; cursor:pointer; font-size:12px;",
                                     onclick: move |_| open_editor(f.clone()),
                                     "Edit"
                                 }
@@ -337,12 +340,12 @@ fn app() -> Element {
                             let f2 = f.clone();
                             rsx! {
                                 button {
-                                    style: "background:{BG_ELEVATED}; border:1px solid {BORDER}; color:{TEXT_MUTED}; padding:4px 10px; border-radius:4px; cursor:pointer; font-size:12px;",
+                                    style: "background:var(--bg-tertiary); border:1px solid var(--border); color:var(--fg-muted); padding:4px 10px; border-radius:4px; cursor:pointer; font-size:12px;",
                                     onclick: move |_| save_zone(f.clone()),
                                     "Save"
                                 }
                                 button {
-                                    style: "background:{BG_ELEVATED}; border:1px solid {BORDER}; color:{TEXT_MUTED}; padding:4px 10px; border-radius:4px; cursor:pointer; font-size:12px;",
+                                    style: "background:var(--bg-tertiary); border:1px solid var(--border); color:var(--fg-muted); padding:4px 10px; border-radius:4px; cursor:pointer; font-size:12px;",
                                     onclick: move |_| open_zone(f2.clone()),
                                     "Cancel"
                                 }
@@ -356,7 +359,7 @@ fn app() -> Element {
             // Error banner
             if let Some(ref err) = error_msg() {
                 div {
-                    style: "padding:8px 16px; background:#7f1d1d; color:#fca5a5; font-size:12px;",
+                    style: "padding:8px 16px; background:var(--danger); color:var(--bg-primary); font-size:12px;",
                     "{err}"
                 }
             }
@@ -371,13 +374,13 @@ fn app() -> Element {
                                     let filename = zone.filename.clone();
                                     rsx! {
                                         div {
-                                            style: "display:flex; align-items:center; padding:10px 12px; background:{BG_SURFACE}; border-radius:6px; cursor:pointer; gap:12px;",
+                                            style: "display:flex; align-items:center; padding:10px 12px; background:var(--bg-secondary); border-radius:6px; cursor:pointer; gap:12px;",
                                             onclick: move |_| open_zone(filename.clone()),
                                             span { style: "font-weight:500; flex:1;", "{zone.origin}" }
-                                            span { style: "color:{TEXT_DIM}; font-size:11px;",
+                                            span { style: "color:var(--fg-muted); font-size:11px;",
                                                 "{zone.record_count} records"
                                             }
-                                            span { style: "color:{TEXT_DIM}; font-size:11px; font-family:monospace;",
+                                            span { style: "color:var(--fg-muted); font-size:11px; font-family:monospace;",
                                                 "{zone.filename}"
                                             }
                                         }
@@ -385,17 +388,17 @@ fn app() -> Element {
                                 }
                             }
                             if zones().is_empty() {
-                                div { style: "padding:24px; text-align:center; color:{TEXT_DIM};",
+                                div { style: "padding:24px; text-align:center; color:var(--fg-muted);",
                                     "No zone files found in {zdir}. Place .zone files there or set HICKORY_ZONE_DIR."
                                 }
                             }
                         }
                     },
                     View::ZoneRecords(_) => rsx! {
-                        div { style: "background:{BG_SURFACE}; border-radius:6px; overflow:hidden;",
+                        div { style: "background:var(--bg-secondary); border-radius:6px; overflow:hidden;",
                             // Table header
                             div {
-                                style: "display:grid; grid-template-columns:2fr 80px 3fr 60px; gap:8px; padding:8px 12px; background:{BG_ELEVATED}; font-size:11px; color:{TEXT_DIM}; text-transform:uppercase; letter-spacing:0.05em;",
+                                style: "display:grid; grid-template-columns:2fr 80px 3fr 60px; gap:8px; padding:8px 12px; background:var(--bg-tertiary); font-size:11px; color:var(--fg-muted); text-transform:uppercase; letter-spacing:0.05em;",
                                 span { "Name" }
                                 span { "Type" }
                                 span { "Data" }
@@ -403,8 +406,8 @@ fn app() -> Element {
                             }
                             for rec in records().iter() {
                                 div {
-                                    style: "display:grid; grid-template-columns:2fr 80px 3fr 60px; gap:8px; padding:6px 12px; border-top:1px solid {BORDER}; font-size:12px;",
-                                    span { style: "overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:{TEXT_SECONDARY};",
+                                    style: "display:grid; grid-template-columns:2fr 80px 3fr 60px; gap:8px; padding:6px 12px; border-top:1px solid var(--border); font-size:12px;",
+                                    span { style: "overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--fg-secondary);",
                                         "{rec.name}"
                                     }
                                     span { style: "color:{type_color(&rec.rtype)}; font-weight:500;",
@@ -413,13 +416,13 @@ fn app() -> Element {
                                     span { style: "overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:monospace; font-size:11px;",
                                         "{rec.rdata}"
                                     }
-                                    span { style: "color:{TEXT_DIM}; font-size:11px;",
+                                    span { style: "color:var(--fg-muted); font-size:11px;",
                                         "{rec.ttl}"
                                     }
                                 }
                             }
                             if records().is_empty() {
-                                div { style: "padding:24px; text-align:center; color:{TEXT_DIM};",
+                                div { style: "padding:24px; text-align:center; color:var(--fg-muted);",
                                     "No records"
                                 }
                             }
@@ -427,7 +430,7 @@ fn app() -> Element {
                     },
                     View::ZoneEdit(_) => rsx! {
                         textarea {
-                            style: "width:100%; height:calc(100vh - 120px); background:{BG_SURFACE}; color:{TEXT_PRIMARY}; border:1px solid {BORDER}; border-radius:6px; padding:12px; font-family:monospace; font-size:12px; resize:none; outline:none;",
+                            style: "width:100%; height:calc(100vh - 120px); background:var(--bg-secondary); color:var(--fg-primary); border:1px solid var(--border); border-radius:6px; padding:12px; font-family:monospace; font-size:12px; resize:none; outline:none;",
                             value: "{edit_content}",
                             oninput: move |e| edit_content.set(e.value()),
                         }
@@ -448,32 +451,6 @@ fn type_color(rtype: &str) -> &'static str {
         "SOA" => "#94a3b8",
         "SRV" => "#fb923c",
         "PTR" => "#e879f9",
-        _ => TEXT_MUTED,
+        _ => "var(--fg-muted)",
     }
 }
-
-// ── Theme ──
-
-const BG_BASE: &str = cosmix_ui::theme::BG_BASE;
-const BG_SURFACE: &str = cosmix_ui::theme::BG_SURFACE;
-const BG_ELEVATED: &str = cosmix_ui::theme::BG_ELEVATED;
-const BORDER: &str = cosmix_ui::theme::BORDER_DEFAULT;
-const TEXT_PRIMARY: &str = cosmix_ui::theme::TEXT_PRIMARY;
-const TEXT_SECONDARY: &str = cosmix_ui::theme::TEXT_SECONDARY;
-const TEXT_MUTED: &str = cosmix_ui::theme::TEXT_MUTED;
-const TEXT_DIM: &str = cosmix_ui::theme::TEXT_DIM;
-
-const CSS: &str = r#"
-html, body, #main {
-    margin: 0; padding: 0;
-    width: 100%; height: 100%;
-    overflow: hidden;
-}
-::-webkit-scrollbar { width: 8px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #374151; border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: #4b5563; }
-button:hover { background: #374151 !important; }
-div[style*="cursor:pointer"]:hover { background: #1e293b !important; }
-textarea:focus { border-color: #58a6ff !important; }
-"#;

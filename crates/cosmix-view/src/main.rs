@@ -5,20 +5,11 @@ use dioxus::prelude::*;
 use dioxus::prelude::Key;
 use std::path::PathBuf;
 use std::sync::Arc;
+use cosmix_ui::app_init::{THEME, use_theme_css, use_theme_poll};
 use cosmix_ui::menu::{action_shortcut, amp_action, menubar, standard_file_menu, submenu, MenuBar, Shortcut};
-use cosmix_ui::theme::{ThemeParams, generate_css};
 
-// ── Theme params (loaded from config, refreshed every 30s) ──
-
-static THEME: GlobalSignal<ThemeParams> = Signal::global(|| {
-    cosmix_config::store::load()
-        .map(|s| ThemeParams {
-            hue: s.global.theme_hue,
-            dark: s.global.theme_dark,
-            font_size: s.global.font_size,
-        })
-        .unwrap_or_default()
-});
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() {
     let arg = std::env::args().nth(1);
@@ -113,28 +104,7 @@ fn app() -> Element {
     });
 
     // Poll config every 30s for theme changes
-    use_effect(move || {
-        spawn(async move {
-            loop {
-                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                if let Ok(settings) = cosmix_config::store::load() {
-                    let new = ThemeParams {
-                        hue: settings.global.theme_hue,
-                        dark: settings.global.theme_dark,
-                        font_size: settings.global.font_size,
-                    };
-                    let current = THEME.read();
-                    if new.font_size != current.font_size
-                        || new.hue != current.hue
-                        || new.dark != current.dark
-                    {
-                        drop(current);
-                        *THEME.write() = new;
-                    }
-                }
-            }
-        });
-    });
+    use_theme_poll(30);
 
     let open_file = move || {
         spawn(async move {
@@ -189,9 +159,8 @@ fn app() -> Element {
         }
     };
 
-    let theme = THEME.read().clone();
-    let theme_css = generate_css(&theme);
-    let fs = theme.font_size;
+    let theme_css = use_theme_css();
+    let fs = THEME.read().font_size;
 
     let content = match file_path() {
         Some(ref path) if is_image(path) => render_image(path),

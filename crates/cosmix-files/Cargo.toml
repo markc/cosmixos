@@ -18,9 +18,10 @@ desktop = ["dioxus/desktop", "dep:dioxus-desktop", "dep:tao"]
 dioxus = { version = "0.7", features = [] }
 dioxus-desktop = { version = "0.7", optional = true }
 tao = { version = "0.34", default-features = false, optional = true }
-cosmix_ui = { package = "cosmix-lib-ui", path = "../cosmix-lib-ui" }
+cosmix_ui = { package = "cosmix-lib-ui", path = "../cosmix-lib-ui", features = ["config"] }
 cosmix_client = { package = "cosmix-lib-client", path = "../cosmix-lib-client" }
 cosmix_config = { package = "cosmix-lib-config", path = "../cosmix-lib-config" }
+mimalloc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

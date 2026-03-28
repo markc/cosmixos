@@ -7,27 +7,12 @@ pub mod layout;
 pub mod panels;
 
 use dioxus::prelude::*;
-use cosmix_ui::theme::{ThemeParams, generate_css};
+pub use cosmix_ui::app_init::THEME;
+use cosmix_ui::app_init::use_theme_css;
 
 use layout::topnav::TopNav;
 use layout::sidebar::Sidebar;
 use layout::centre::CentrePanel;
-
-/// Global theme params, loaded from config.
-pub static THEME: GlobalSignal<ThemeParams> = Signal::global(|| {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        cosmix_config::store::load()
-            .map(|s| ThemeParams {
-                hue: s.global.theme_hue,
-                dark: s.global.theme_dark,
-                font_size: s.global.font_size,
-            })
-            .unwrap_or_default()
-    }
-    #[cfg(target_arch = "wasm32")]
-    { ThemeParams::default() }
-});
 
 /// Which left panel is active.
 pub static LEFT_PANEL: GlobalSignal<usize> = Signal::global(|| 0);
@@ -45,8 +30,7 @@ pub const RIGHT_PANELS: &[&str] = &["Monitor", "Settings", "Notifications"];
 
 /// The main shell component.
 pub fn shell_app() -> Element {
-    let theme = THEME.read().clone();
-    let css = generate_css(&theme);
+    let css = use_theme_css();
 
     let left_pinned = *LEFT_PINNED.read();
     let right_pinned = *RIGHT_PINNED.read();
