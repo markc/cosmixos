@@ -132,7 +132,7 @@ fn app() -> Element {
 
             // Sidebar
             div {
-                style: "width:180px;background:var(--bg-secondary);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:8px 0;",
+                style: "width:180px;background:var(--bg-secondary);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:8px 0;overflow-y:auto;",
 
                 div {
                     style: "padding:12px 16px;font-size:var(--font-size);font-weight:600;color:var(--fg-secondary);",
