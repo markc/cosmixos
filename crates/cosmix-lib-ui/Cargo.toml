@@ -14,6 +14,7 @@ path = "src/lib.rs"
 default = ["desktop"]
 desktop = ["dep:dioxus-desktop", "dep:tao", "dep:rfd"]
 web = []
+config = ["dep:cosmix_config"]
 hub = ["dep:cosmix_client", "dep:serde_json"]
 
 [dependencies]
@@ -22,6 +23,7 @@ dioxus-desktop = { version = "0.7", optional = true }
 tao = { version = "0.34", default-features = false, optional = true }
 rfd = { version = "0.15", optional = true }
 cosmix_client = { package = "cosmix-lib-client", path = "../cosmix-lib-client", optional = true, default-features = false }
+cosmix_config = { package = "cosmix-lib-config", path = "../cosmix-lib-config", optional = true }
 serde_json = { workspace = true, optional = true }
 tracing = { workspace = true }
 pulldown-cmark = { workspace = true }
