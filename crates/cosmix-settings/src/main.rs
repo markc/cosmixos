@@ -5,7 +5,7 @@
 //! Save writes to `~/.config/cosmix/settings.toml` via cosmix-config.
 
 use dioxus::prelude::*;
-use cosmix_ui::app_init::{THEME, use_theme_css};
+use cosmix_ui::app_init::{THEME, use_theme_css, use_hub_client, use_hub_handler};
 use cosmix_ui::menu::{menubar, standard_file_menu, MenuBar};
 use cosmix_ui::theme::ThemeParams;
 
@@ -55,6 +55,12 @@ fn app() -> Element {
     let mut dirty = use_signal(|| false);
     let mut save_status = use_signal(|| String::new());
 
+    // Connect to hub — enables config.changed notifications to other apps
+    let hub = use_hub_client("settings");
+    use_hub_handler(hub, "settings", |cmd| {
+        Err(format!("unknown command: {}", cmd.command))
+    });
+
     let on_save = move |_| {
         match cosmix_config::store::save(&settings()) {
             Ok(()) => {
@@ -67,8 +73,11 @@ fn app() -> Element {
                     dark: s.global.theme_dark,
                     font_size: s.global.font_size,
                 };
-                // Clear status after 2s
+                // Tell configd to reload + notify all watchers
                 spawn(async move {
+                    if let Some(client) = hub() {
+                        let _ = client.call("configd", "config.reload", serde_json::Value::Null).await;
+                    }
                     #[cfg(not(target_arch = "wasm32"))]
                     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                     save_status.set(String::new());

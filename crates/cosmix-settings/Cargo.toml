@@ -16,7 +16,8 @@ desktop = ["dioxus/desktop", "dep:dioxus-desktop", "dep:tao", "cosmix_ui/desktop
 
 [dependencies]
 cosmix_config = { package = "cosmix-lib-config", path = "../cosmix-lib-config" }
-cosmix_ui = { package = "cosmix-lib-ui", path = "../cosmix-lib-ui", default-features = false, features = ["config"] }
+cosmix_ui = { package = "cosmix-lib-ui", path = "../cosmix-lib-ui", default-features = false, features = ["config", "hub"] }
+cosmix_client = { package = "cosmix-lib-client", path = "../cosmix-lib-client" }
 dioxus = "0.7"
 dioxus-desktop = { version = "0.7", optional = true }
 tao = { version = "0.33", optional = true }
