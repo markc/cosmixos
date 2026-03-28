@@ -96,6 +96,11 @@ fn parse_desktop_entry(path: &Path) -> Option<AppEntry> {
         return None;
     }
 
+    // Don't show ourselves in our own menu
+    if exec.as_deref().is_some_and(|e| e.contains("cosmix-menu")) {
+        return None;
+    }
+
     Some(AppEntry {
         name: name?,
         exec: exec?,
