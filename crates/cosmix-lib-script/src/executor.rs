@@ -1,9 +1,47 @@
-//! Script executor — runs script steps sequentially via the hub.
+//! Script executor — runs TOML step-sequences and Mix scripts via the hub.
 
-use crate::types::{ScriptContext, ScriptDef, ScriptResult};
+use std::sync::Arc;
+
+use crate::types::{Script, ScriptContext, ScriptDef, ScriptResult};
 use crate::variables::substitute;
 
-/// Execute a script by running each step sequentially via the hub.
+/// Execute a discovered script (TOML or Mix).
+pub async fn execute_script(
+    script: &Script,
+    ctx: &mut ScriptContext,
+    hub: Arc<cosmix_client::HubClient>,
+) -> ScriptResult {
+    match script {
+        Script::Toml(def) => execute(def, ctx, &hub).await,
+        #[cfg(feature = "mix")]
+        Script::Mix { path, .. } => {
+            match std::fs::read_to_string(path) {
+                Ok(source) => {
+                    crate::mix_runtime::execute_mix(
+                        &source,
+                        hub,
+                        &ctx.service_name,
+                        &ctx.app_vars,
+                    )
+                    .await
+                }
+                Err(e) => ScriptResult {
+                    rc: 10,
+                    body: None,
+                    error: Some(format!("Failed to read {}: {e}", path.display())),
+                },
+            }
+        }
+        #[cfg(not(feature = "mix"))]
+        Script::Mix { .. } => ScriptResult {
+            rc: 10,
+            body: None,
+            error: Some("Mix scripting not enabled (compile with 'mix' feature)".to_string()),
+        },
+    }
+}
+
+/// Execute a TOML script by running each step sequentially via the hub.
 ///
 /// Steps are executed in order. If a step has `store`, the response body
 /// is saved as a variable for subsequent steps. Execution aborts on

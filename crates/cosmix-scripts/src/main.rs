@@ -1,10 +1,13 @@
-//! cosmix-scripts — Lua + Bash script manager for Cosmix.
+//! cosmix-scripts — Script manager for Cosmix.
 //!
-//! Discovers scripts from ~/.local/scripts/ (*.lua, *.sh).
-//! Provides list, run, edit, delete, and new subcommands.
+//! Discovers scripts from ~/.local/scripts/ (*.mix, *.sh).
+//! Runs .mix files with the embedded mix-core evaluator (AMP-enabled).
+//! Runs .sh files with bash.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 
@@ -23,7 +26,12 @@ enum Cmd {
     /// List all scripts
     List,
     /// Run a script by name
-    Run { name: String },
+    Run {
+        name: String,
+        /// Connect to the AMP hub for IPC (default: try, but don't fail)
+        #[arg(long)]
+        no_hub: bool,
+    },
     /// Open a script in cosmix-edit
     Edit { name: String },
     /// Delete a script (moves to trash)
@@ -32,8 +40,8 @@ enum Cmd {
     New {
         /// Script name (without extension)
         name: Option<String>,
-        /// Language: lua or bash (default: lua)
-        #[arg(short, long, default_value = "lua")]
+        /// Language: mix or bash (default: mix)
+        #[arg(short, long, default_value = "mix")]
         lang: String,
     },
     /// Open the scripts folder in the file manager
@@ -64,7 +72,7 @@ fn discover_scripts() -> Vec<ScriptEntry> {
             let path = e.path();
             let ext = path.extension()?.to_str()?;
             let lang = match ext {
-                "lua" => "lua",
+                "mix" => "mix",
                 "sh" => "bash",
                 _ => return None,
             };
@@ -85,41 +93,75 @@ fn find_script(name: &str) -> Option<ScriptEntry> {
     discover_scripts().into_iter().find(|s| s.name == name)
 }
 
-fn run_script(path: &Path) {
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("lua");
-    let interpreter = match ext {
-        "sh" => "bash",
-        _ => "lua",
+async fn run_mix_script(path: &Path, no_hub: bool) {
+    let source = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Failed to read {}: {e}", path.display());
+            std::process::exit(1);
+        }
     };
 
+    // Try connecting to the hub for AMP IPC (optional)
+    let hub = if no_hub {
+        None
+    } else {
+        cosmix_client::HubClient::connect_anonymous_default()
+            .await
+            .ok()
+    };
+
+    if let Some(hub) = hub {
+        let hub = Arc::new(hub);
+        let result = cosmix_script::execute_mix(
+            &source,
+            hub,
+            "scripts",
+            &HashMap::new(),
+        )
+        .await;
+
+        if let Some(ref body) = result.body {
+            print!("{body}");
+        }
+        if let Some(ref err) = result.error {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+    } else {
+        // Run without AMP — basic Mix execution only
+        match mix_core::run_capturing(&source).await {
+            Ok((_val, stdout, stderr)) => {
+                if !stdout.is_empty() {
+                    print!("{stdout}");
+                }
+                if !stderr.is_empty() {
+                    eprint!("{stderr}");
+                }
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+    }
+}
+
+fn run_bash_script(path: &Path) {
     let name = path
         .file_stem()
         .unwrap_or_default()
         .to_string_lossy()
         .to_string();
 
-    match Command::new(interpreter).arg(path).output() {
+    match Command::new("bash").arg(path).output() {
         Ok(output) => {
             let text = String::from_utf8_lossy(&output.stdout).to_string()
                 + &String::from_utf8_lossy(&output.stderr);
             if text.is_empty() {
                 println!("{name}: (no output)");
             } else {
-                // Try cosmix-dialog for GUI display, fall back to stdout
-                let mut child = Command::new("cosmix-dialog")
-                    .args(["text-info", "--title", &name])
-                    .stdin(std::process::Stdio::piped())
-                    .spawn()
-                    .ok();
-                if let Some(ref mut c) = child {
-                    use std::io::Write;
-                    if let Some(ref mut stdin) = c.stdin {
-                        let _ = stdin.write_all(text.as_bytes());
-                    }
-                    let _ = c.wait();
-                } else {
-                    print!("{text}");
-                }
+                print!("{text}");
             }
         }
         Err(e) => {
@@ -143,7 +185,6 @@ fn delete_script(path: &Path) {
         .to_string_lossy()
         .to_string();
 
-    // Try cosmix-dialog for confirmation, fall back to just deleting
     let confirmed = Command::new("cosmix-dialog")
         .args(["confirm", "--text", &format!("Delete '{name}'?")])
         .status()
@@ -169,7 +210,7 @@ fn new_script(name: Option<&str>, lang: &str) {
 
     let ext = match lang {
         "bash" | "sh" => "sh",
-        _ => "lua",
+        _ => "mix",
     };
 
     let path = if let Some(name) = name {
@@ -196,7 +237,7 @@ fn new_script(name: Option<&str>, lang: &str) {
 
     let template = match ext {
         "sh" => "#!/usr/bin/env bash\n# New cosmix script\nset -euo pipefail\n\necho \"hello from cosmix\"\n",
-        _ => "#!/usr/bin/env lua\n-- New cosmix script\n\nprint(\"hello from cosmix\")\n",
+        _ => "-- @script New Script\n-- @description A new Mix script\n\nprint \"hello from cosmix\"\n",
     };
 
     let _ = std::fs::write(&path, template);
@@ -204,7 +245,8 @@ fn new_script(name: Option<&str>, lang: &str) {
     edit_script(&path);
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let cli = Cli::parse();
 
     match cli.command {
@@ -218,8 +260,11 @@ fn main() {
                 println!("  {} ({})", s.name, s.lang);
             }
         }
-        Some(Cmd::Run { name }) => match find_script(&name) {
-            Some(s) => run_script(&s.path),
+        Some(Cmd::Run { name, no_hub }) => match find_script(&name) {
+            Some(s) => match s.lang {
+                "mix" => run_mix_script(&s.path, no_hub).await,
+                _ => run_bash_script(&s.path),
+            },
             None => {
                 eprintln!("Script not found: {name}");
                 std::process::exit(1);

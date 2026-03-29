@@ -328,7 +328,7 @@ fn app() -> Element {
                                     vars.insert("CURRENT_FILE".into(), p.clone());
                                 }
                                 vars.insert("SERVICE_NAME".into(), "edit".into());
-                                cosmix_script::handle_script_action(&id, "edit", &client, &vars).await;
+                                cosmix_script::handle_script_action(&id, "edit", client, &vars).await;
                             });
                         }
                     }

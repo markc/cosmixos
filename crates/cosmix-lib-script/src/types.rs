@@ -1,8 +1,28 @@
 //! Core types for script definitions, execution context, and results.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+
+/// A discovered script — either a TOML step-sequence or a Mix program.
+#[derive(Debug, Clone)]
+pub enum Script {
+    /// TOML-defined AMP step sequence.
+    Toml(ScriptDef),
+    /// Mix source file with metadata from comment headers.
+    Mix { meta: ScriptMeta, path: PathBuf },
+}
+
+impl Script {
+    /// Get the script metadata regardless of type.
+    pub fn meta(&self) -> &ScriptMeta {
+        match self {
+            Script::Toml(def) => &def.script,
+            Script::Mix { meta, .. } => meta,
+        }
+    }
+}
 
 /// A complete script definition parsed from a TOML file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
