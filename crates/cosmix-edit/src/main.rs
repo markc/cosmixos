@@ -63,6 +63,10 @@ fn handle_edit_open(cmd: &cosmix_client::IncomingCommand) -> Result<String, Stri
 
     let line = cmd.args.get("line").and_then(|v| v.as_u64()).map(|l| l as usize);
 
+    // Set EDITOR_PATH immediately so AMP-driven menu actions (e.g. preview)
+    // can read it in the same render cycle, before the poll loop runs.
+    *EDITOR_PATH.write() = Some(path.to_string());
+
     *OPEN_REQUEST.write() = Some(OpenRequest {
         path: Some(path.to_string()),
         content: None,
@@ -227,6 +231,9 @@ fn app() -> Element {
         cosmix_script::user_menu("edit"),
     ]);
 
+    // Register menu for AMP discovery (menu.list)
+    *cosmix_ui::menu::MENU_DEF.write() = Some(app_menu.clone());
+
     let mut do_save_action = do_save.clone();
     let do_save_as_action = do_save_as.clone();
     let do_open_action = do_open.clone();
@@ -281,7 +288,10 @@ fn app() -> Element {
                     "save" => do_save_action(),
                     "save-as" => do_save_as_action(),
                     "preview" => {
-                        if let Some(ref path) = file_path() {
+                        // Use EDITOR_PATH (global, set immediately) rather than
+                        // file_path (local signal, may lag when called from AMP effect)
+                        let path = EDITOR_PATH.read().clone().or_else(|| file_path());
+                        if let Some(ref path) = path {
                             if let Some(ref client) = hub_client() {
                                 let client = client.clone();
                                 let path = path.clone();

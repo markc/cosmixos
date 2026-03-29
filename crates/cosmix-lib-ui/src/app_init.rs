@@ -239,6 +239,11 @@ pub fn use_hub_handler<F>(
                         reload_theme();
                         Ok(r#"{"status":"ok"}"#.to_string())
                     }
+                    "menu.list" => handle_menu_list(&cmd),
+                    "menu.invoke" | "menu.highlight" | "menu.close" => handle_menu_command(&cmd),
+                    "ui.list" => handle_ui_list(&cmd),
+                    "ui.invoke" | "ui.highlight" | "ui.set" => handle_ui_command(&cmd),
+                    "ui.batch" => handle_ui_batch(&cmd),
                     _ => handler(&cmd),
                 };
 
@@ -335,4 +340,194 @@ pub fn init_app_tracing(app_name: &str) -> tracing_appender::non_blocking::Worke
         .init();
 
     guard
+}
+
+// ── Menu AMP command handlers ──
+
+/// Handle `menu.list` — return all menu items as JSON.
+#[cfg(all(not(target_arch = "wasm32"), feature = "hub"))]
+fn handle_menu_list(
+    _cmd: &cosmix_client::IncomingCommand,
+) -> Result<String, String> {
+    use crate::menu::MENU_DEF;
+
+    let def = MENU_DEF.read();
+    match def.as_ref() {
+        Some(menu) => {
+            let items: Vec<serde_json::Value> = menu
+                .collect_items()
+                .iter()
+                .map(|i| i.to_json_value())
+                .collect();
+            Ok(serde_json::to_string(&items).unwrap_or_else(|_| "[]".to_string()))
+        }
+        None => Ok("[]".to_string()),
+    }
+}
+
+/// Handle `menu.invoke`, `menu.highlight`, `menu.close` — write to MENU_CMD signal.
+#[cfg(all(not(target_arch = "wasm32"), feature = "hub"))]
+fn handle_menu_command(
+    cmd: &cosmix_client::IncomingCommand,
+) -> Result<String, String> {
+    use crate::menu::{MenuCommand, MENU_CMD};
+
+    let menu_cmd = match cmd.command.as_str() {
+        "menu.close" => MenuCommand::Close,
+        "menu.invoke" => {
+            let id = cmd.args.get("id")
+                .and_then(|v| v.as_str())
+                .ok_or("menu.invoke requires {\"id\": \"...\"}")?;
+            MenuCommand::Invoke { id: id.to_string() }
+        }
+        "menu.highlight" => {
+            let id = cmd.args.get("id")
+                .and_then(|v| v.as_str())
+                .ok_or("menu.highlight requires {\"id\": \"...\"}")?;
+            let ms = cmd.args.get("ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(500) as u32;
+            MenuCommand::Highlight { id: id.to_string(), duration_ms: ms }
+        }
+        _ => return Err(format!("unknown menu command: {}", cmd.command)),
+    };
+
+    *MENU_CMD.write() = Some(menu_cmd);
+    Ok(r#"{"status":"ok"}"#.to_string())
+}
+
+// ── UI element AMP command handlers ──
+
+/// Handle `ui.list` — return all registered UI elements as JSON.
+#[cfg(all(not(target_arch = "wasm32"), feature = "hub"))]
+fn handle_ui_list(
+    cmd: &cosmix_client::IncomingCommand,
+) -> Result<String, String> {
+    use crate::components::UI_REGISTRY;
+
+    let prefix = cmd.args.get("prefix").and_then(|v| v.as_str());
+    let registry = UI_REGISTRY.read();
+    let items = registry.list(prefix);
+    Ok(serde_json::to_string(&items).unwrap_or_else(|_| "[]".to_string()))
+}
+
+/// Handle `ui.invoke`, `ui.highlight`, `ui.set` — write to UI_CMD signal.
+#[cfg(all(not(target_arch = "wasm32"), feature = "hub"))]
+fn handle_ui_command(
+    cmd: &cosmix_client::IncomingCommand,
+) -> Result<String, String> {
+    use crate::components::{UiCommand, UI_CMD};
+
+    let id = cmd.args.get("id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| format!("{} requires {{\"id\": \"...\"}}", cmd.command))?
+        .to_string();
+
+    let ui_cmd = match cmd.command.as_str() {
+        "ui.invoke" => UiCommand::Invoke,
+        "ui.highlight" => {
+            let ms = cmd.args.get("ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(500) as u32;
+            UiCommand::Highlight { duration_ms: ms }
+        }
+        "ui.set" => {
+            let value = cmd.args.get("value")
+                .and_then(|v| v.as_str())
+                .ok_or("ui.set requires {\"id\": \"...\", \"value\": \"...\"}")?
+                .to_string();
+            UiCommand::SetValue(value)
+        }
+        _ => return Err(format!("unknown ui command: {}", cmd.command)),
+    };
+
+    *UI_CMD.write() = Some((id, ui_cmd));
+    Ok(r#"{"status":"ok"}"#.to_string())
+}
+
+/// Handle `ui.batch` — process multiple UI actions in a single round trip.
+///
+/// Body is a JSON array of action objects:
+/// ```json
+/// [
+///   {"command": "menu.invoke", "id": "save"},
+///   {"command": "ui.invoke", "id": "file.open"},
+///   {"command": "ui.highlight", "id": "file.save", "ms": 500},
+///   {"command": "menu.close"}
+/// ]
+/// ```
+///
+/// Returns results array with rc per action.
+#[cfg(all(not(target_arch = "wasm32"), feature = "hub"))]
+fn handle_ui_batch(
+    cmd: &cosmix_client::IncomingCommand,
+) -> Result<String, String> {
+    use crate::menu::{MenuCommand, MENU_CMD};
+    use crate::components::{UiCommand, UI_CMD};
+
+    // args can be the array directly, or {"actions": [...]}
+    let actions = cmd.args.as_array()
+        .or_else(|| cmd.args.get("actions").and_then(|v| v.as_array()))
+        .ok_or("ui.batch requires a JSON array of actions (or {\"actions\": [...]})")?;
+
+    let mut results = Vec::new();
+
+    for action in actions {
+        let command = action.get("command").and_then(|v| v.as_str()).unwrap_or("");
+        let id = action.get("id").and_then(|v| v.as_str());
+
+        let result = match command {
+            "menu.close" => {
+                *MENU_CMD.write() = Some(MenuCommand::Close);
+                serde_json::json!({"command": command, "rc": 0})
+            }
+            "menu.invoke" => {
+                if let Some(id) = id {
+                    *MENU_CMD.write() = Some(MenuCommand::Invoke { id: id.to_string() });
+                    serde_json::json!({"command": command, "id": id, "rc": 0})
+                } else {
+                    serde_json::json!({"command": command, "rc": 10, "error": "missing id"})
+                }
+            }
+            "menu.highlight" => {
+                if let Some(id) = id {
+                    let ms = action.get("ms").and_then(|v| v.as_u64()).unwrap_or(500) as u32;
+                    *MENU_CMD.write() = Some(MenuCommand::Highlight { id: id.to_string(), duration_ms: ms });
+                    serde_json::json!({"command": command, "id": id, "rc": 0})
+                } else {
+                    serde_json::json!({"command": command, "rc": 10, "error": "missing id"})
+                }
+            }
+            "ui.invoke" => {
+                if let Some(id) = id {
+                    *UI_CMD.write() = Some((id.to_string(), UiCommand::Invoke));
+                    serde_json::json!({"command": command, "id": id, "rc": 0})
+                } else {
+                    serde_json::json!({"command": command, "rc": 10, "error": "missing id"})
+                }
+            }
+            "ui.highlight" => {
+                if let Some(id) = id {
+                    let ms = action.get("ms").and_then(|v| v.as_u64()).unwrap_or(500) as u32;
+                    *UI_CMD.write() = Some((id.to_string(), UiCommand::Highlight { duration_ms: ms }));
+                    serde_json::json!({"command": command, "id": id, "rc": 0})
+                } else {
+                    serde_json::json!({"command": command, "rc": 10, "error": "missing id"})
+                }
+            }
+            "ui.set" => {
+                match (id, action.get("value").and_then(|v| v.as_str())) {
+                    (Some(id), Some(value)) => {
+                        *UI_CMD.write() = Some((id.to_string(), UiCommand::SetValue(value.to_string())));
+                        serde_json::json!({"command": command, "id": id, "rc": 0})
+                    }
+                    _ => serde_json::json!({"command": command, "rc": 10, "error": "missing id or value"}),
+                }
+            }
+            _ => serde_json::json!({"command": command, "rc": 10, "error": "unknown batch command"}),
+        };
+        results.push(result);
+    }
+
+    Ok(serde_json::to_string(&results).unwrap_or_else(|_| "[]".to_string()))
 }

@@ -1,4 +1,28 @@
 use dioxus::prelude::{KeyboardEvent, ModifiersInteraction};
+use serde_json;
+
+// ── AMP menu commands ─────────────────────────────────────────────────────
+
+/// External command that can be sent to the menu bar via AMP.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MenuCommand {
+    /// Open the parent menu and pulse-highlight an item (visual only).
+    Highlight { id: String, duration_ms: u32 },
+    /// Highlight briefly, then fire the action (simulates a click).
+    Invoke { id: String },
+    /// Close any open dropdown.
+    Close,
+}
+
+/// Discoverable menu item info returned by `menu.list`.
+#[derive(Clone, Debug)]
+pub struct MenuItemInfo {
+    pub id: String,
+    pub label: String,
+    pub shortcut: Option<String>,
+    pub enabled: bool,
+    pub menu: String,
+}
 
 /// A keyboard shortcut modifier + key combination.
 #[derive(Clone, Debug, PartialEq)]
@@ -92,5 +116,77 @@ impl MenuBarDef {
     pub fn with(mut self, menu: MenuItem) -> Self {
         self.menus.push(menu);
         self
+    }
+
+    /// Collect all actionable menu items for `menu.list` discovery.
+    pub fn collect_items(&self) -> Vec<MenuItemInfo> {
+        let mut out = Vec::new();
+        for top in &self.menus {
+            if let MenuItem::Submenu { label, items } = top {
+                collect_items_recursive(items, label, &mut out);
+            }
+        }
+        out
+    }
+
+    /// Find which top-level menu index contains an item with the given ID.
+    /// Returns (menu_index, reference to the MenuItem).
+    pub fn find_item(&self, id: &str) -> Option<(usize, &MenuItem)> {
+        for (idx, top) in self.menus.iter().enumerate() {
+            if let MenuItem::Submenu { items, .. } = top {
+                if let Some(item) = find_in_items(items, id) {
+                    return Some((idx, item));
+                }
+            }
+        }
+        None
+    }
+}
+
+fn collect_items_recursive(items: &[MenuItem], menu_label: &str, out: &mut Vec<MenuItemInfo>) {
+    for item in items {
+        match item {
+            MenuItem::Action { id, label, shortcut, enabled, .. } => {
+                out.push(MenuItemInfo {
+                    id: id.clone(),
+                    label: label.clone(),
+                    shortcut: shortcut.as_ref().map(|s| s.label()),
+                    enabled: *enabled,
+                    menu: menu_label.to_string(),
+                });
+            }
+            MenuItem::Submenu { label, items } => {
+                collect_items_recursive(items, label, out);
+            }
+            MenuItem::Separator => {}
+        }
+    }
+}
+
+fn find_in_items<'a>(items: &'a [MenuItem], id: &str) -> Option<&'a MenuItem> {
+    for item in items {
+        match item {
+            MenuItem::Action { id: item_id, .. } if item_id == id => return Some(item),
+            MenuItem::Submenu { items, .. } => {
+                if let Some(found) = find_in_items(items, id) {
+                    return Some(found);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+impl MenuItemInfo {
+    /// Serialize to JSON for `menu.list` responses.
+    pub fn to_json_value(&self) -> serde_json::Value {
+        serde_json::json!({
+            "id": self.id,
+            "label": self.label,
+            "shortcut": self.shortcut,
+            "enabled": self.enabled,
+            "menu": self.menu,
+        })
     }
 }

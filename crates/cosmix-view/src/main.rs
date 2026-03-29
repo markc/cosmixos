@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use dioxus::prelude::*;
 use dioxus::prelude::Key;
 use cosmix_ui::app_init::{THEME, use_theme_css, use_theme_poll, use_hub_client, use_hub_handler};
+use cosmix_ui::components::AmpButton;
 use cosmix_ui::menu::{action_shortcut, amp_action, menubar, standard_file_menu, submenu, MenuBar, Shortcut};
 
 #[global_allocator]
@@ -184,6 +185,10 @@ fn app() -> Element {
         ]),
         cosmix_script::user_menu("view"),
     ]);
+
+    // Register menu for AMP discovery (menu.list)
+    *cosmix_ui::menu::MENU_DEF.write() = Some(app_menu.clone());
+
     let open_for_menu = open_file.clone();
 
     let onkeydown = move |e: KeyboardEvent| {
@@ -292,6 +297,26 @@ fn render_welcome() -> Element {
                 h2 { style: "color:var(--fg-muted); font-weight:400;", "cosmix-view" }
                 p { style: "color:var(--fg-muted);", "Open a file with File > Open or Ctrl+O" }
                 p { style: "color:var(--fg-secondary); font-size:0.85em;", "Supports Markdown, DOT graphs, and images" }
+                div { style: "margin-top: 16px;",
+                    AmpButton {
+                        id: "file.open",
+                        label: "Open File...",
+                        on_click: move |_| {
+                            spawn(async move {
+                                let picked = rfd::AsyncFileDialog::new()
+                                    .add_filter("All supported", &["md", "markdown", "dot", "gv", "png", "jpg", "jpeg", "gif", "webp", "svg", "bmp"])
+                                    .set_title("Open file")
+                                    .pick_file()
+                                    .await;
+                                if let Some(handle) = picked {
+                                    *VIEW_REQUEST.write() = Some(ViewRequest::OpenFile(
+                                        handle.path().to_string_lossy().to_string()
+                                    ));
+                                }
+                            });
+                        },
+                    }
+                }
             }
         }
     }

@@ -1,11 +1,19 @@
 use dioxus::prelude::*;
 
-use super::types::{MenuAction, MenuBarDef, MenuItem};
+use super::types::{MenuAction, MenuBarDef, MenuCommand, MenuItem};
 
 #[cfg(feature = "hub")]
 use std::sync::Arc;
 #[cfg(feature = "hub")]
 use cosmix_client::HubClient;
+
+// ── Global signals for AMP menu control ──────────────────────────────────
+
+/// Write to this signal to send a command to the active MenuBar.
+pub static MENU_CMD: GlobalSignal<Option<MenuCommand>> = Signal::global(|| None);
+
+/// Set this to your app's MenuBarDef so `menu.list` can discover items.
+pub static MENU_DEF: GlobalSignal<Option<MenuBarDef>> = Signal::global(|| None);
 
 // ── CSS ───────────────────────────────────────────────────────────────────
 
@@ -78,6 +86,15 @@ const MENU_CSS: &str = r#"
     position: fixed;
     inset: 0;
     z-index: 9998;
+}
+/* AMP highlight pulse — applied to menu items targeted by menu.highlight/invoke */
+.cmx-amp-highlight {
+    background: var(--bg-tertiary, #1f2937);
+    animation: amp-pulse 400ms ease-out;
+}
+@keyframes amp-pulse {
+    0%   { box-shadow: inset 0 0 0 2px var(--accent, #3b82f6); }
+    100% { box-shadow: inset 0 0 0 0 transparent; }
 }
 /* Drag region — the spacer area between menus and caption buttons */
 .cmx-drag-region {
@@ -155,11 +172,73 @@ pub fn MenuBar(props: MenuBarProps) -> Element {
     let mut open_idx: Signal<Option<usize>> = use_signal(|| None);
     // Position of the open dropdown (left, top in pixels)
     let mut drop_pos: Signal<(f64, f64)> = use_signal(|| (0.0, 0.0));
+    // ID of the menu item currently highlighted by an AMP command
+    #[allow(unused_mut)]
+    let mut highlight_id: Signal<Option<String>> = use_signal(|| None);
 
     let menu = props.menu.clone();
     let on_action = props.on_action.clone();
     #[cfg(feature = "hub")]
     let hub = props.hub.clone();
+
+    // ── AMP menu command processing (requires hub + config for tokio sleep) ──
+    #[cfg(all(not(target_arch = "wasm32"), feature = "hub", feature = "config"))]
+    {
+        let menu2 = menu.clone();
+        let on_action2 = on_action.clone();
+        #[cfg(feature = "hub")]
+        let hub2 = hub.clone();
+        use_effect(move || {
+            let cmd = MENU_CMD.read().clone();
+            let Some(cmd) = cmd else { return };
+            // Consume the command immediately
+            *MENU_CMD.write() = None;
+
+            match cmd {
+                MenuCommand::Close => {
+                    open_idx.set(None);
+                    highlight_id.set(None);
+                }
+                MenuCommand::Highlight { id, duration_ms } => {
+                    if let Some((idx, _)) = menu2.find_item(&id) {
+                        // Open the parent menu at a default position
+                        drop_pos.set((10.0 + idx as f64 * 60.0, 28.0));
+                        open_idx.set(Some(idx));
+                        highlight_id.set(Some(id.clone()));
+                        // Clear highlight after duration
+                        let ms = duration_ms;
+                        spawn(async move {
+                            tokio::time::sleep(std::time::Duration::from_millis(ms as u64)).await;
+                            highlight_id.set(None);
+                        });
+                    }
+                }
+                MenuCommand::Invoke { id } => {
+                    if let Some((idx, item)) = menu2.find_item(&id) {
+                        // Open menu and highlight briefly
+                        drop_pos.set((10.0 + idx as f64 * 60.0, 28.0));
+                        open_idx.set(Some(idx));
+                        highlight_id.set(Some(id.clone()));
+
+                        // Fire the action through the normal dispatch path
+                        if let MenuItem::Action { action, .. } = item {
+                            #[cfg(feature = "hub")]
+                            dispatch_amp_action(action, &on_action2, &hub2);
+                            #[cfg(not(feature = "hub"))]
+                            dispatch_local_action(action, &on_action2);
+                        }
+
+                        // Clear highlight and close menu after a brief delay
+                        spawn(async move {
+                            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                            highlight_id.set(None);
+                            open_idx.set(None);
+                        });
+                    }
+                }
+            }
+        });
+    }
 
     rsx! {
         // Inject CSS once
@@ -227,6 +306,7 @@ pub fn MenuBar(props: MenuBarProps) -> Element {
                                                         #[cfg(feature = "hub")]
                                                         hub3,
                                                         open_idx,
+                                                        highlight_id,
                                                     )
                                                 }
                                             }
@@ -386,8 +466,9 @@ fn render_item(
     on_action: EventHandler<String>,
     hub: Option<Signal<Option<Arc<HubClient>>>>,
     open_idx: Signal<Option<usize>>,
+    highlight_id: Signal<Option<String>>,
 ) -> Element {
-    render_item_inner(item, on_action, Some(hub), open_idx)
+    render_item_inner(item, on_action, Some(hub), open_idx, highlight_id)
 }
 
 #[cfg(not(feature = "hub"))]
@@ -395,8 +476,9 @@ fn render_item(
     item: &MenuItem,
     on_action: EventHandler<String>,
     open_idx: Signal<Option<usize>>,
+    highlight_id: Signal<Option<String>>,
 ) -> Element {
-    render_item_inner(item, on_action, open_idx)
+    render_item_inner(item, on_action, open_idx, highlight_id)
 }
 
 #[cfg(feature = "hub")]
@@ -405,8 +487,9 @@ fn render_item_inner(
     on_action: EventHandler<String>,
     hub: Option<Option<Signal<Option<Arc<HubClient>>>>>,
     open_idx: Signal<Option<usize>>,
+    highlight_id: Signal<Option<String>>,
 ) -> Element {
-    render_item_shared(item, on_action, hub.flatten(), open_idx)
+    render_item_shared(item, on_action, hub.flatten(), open_idx, highlight_id)
 }
 
 #[cfg(not(feature = "hub"))]
@@ -414,8 +497,9 @@ fn render_item_inner(
     item: &MenuItem,
     on_action: EventHandler<String>,
     open_idx: Signal<Option<usize>>,
+    highlight_id: Signal<Option<String>>,
 ) -> Element {
-    render_item_shared(item, on_action, open_idx)
+    render_item_shared(item, on_action, open_idx, highlight_id)
 }
 
 #[cfg(feature = "hub")]
@@ -424,18 +508,24 @@ fn render_item_shared(
     on_action: EventHandler<String>,
     hub: Option<Signal<Option<Arc<HubClient>>>>,
     mut open_idx: Signal<Option<usize>>,
+    highlight_id: Signal<Option<String>>,
 ) -> Element {
     match item {
         MenuItem::Separator => rsx! { div { class: "cmx-sep" } },
-        MenuItem::Action { label, shortcut, action, enabled, .. } => {
+        MenuItem::Action { id, label, shortcut, action, enabled } => {
             let label = label.clone();
             let shortcut_label = shortcut.as_ref().map(|s| s.label());
             let action = action.clone();
-            let disabled_class = if *enabled { "cmx-menu-item" } else { "cmx-menu-item cmx-disabled" };
+            let is_highlighted = highlight_id.read().as_deref() == Some(id.as_str());
+            let class = match (*enabled, is_highlighted) {
+                (false, _)    => "cmx-menu-item cmx-disabled",
+                (true, true)  => "cmx-menu-item cmx-amp-highlight",
+                (true, false) => "cmx-menu-item",
+            };
 
             rsx! {
                 div {
-                    class: disabled_class,
+                    class,
                     onclick: move |_| {
                         open_idx.set(None);
                         dispatch_amp_action(&action, &on_action, &hub);
@@ -463,18 +553,24 @@ fn render_item_shared(
     item: &MenuItem,
     on_action: EventHandler<String>,
     mut open_idx: Signal<Option<usize>>,
+    highlight_id: Signal<Option<String>>,
 ) -> Element {
     match item {
         MenuItem::Separator => rsx! { div { class: "cmx-sep" } },
-        MenuItem::Action { label, shortcut, action, enabled, .. } => {
+        MenuItem::Action { id, label, shortcut, action, enabled } => {
             let label = label.clone();
             let shortcut_label = shortcut.as_ref().map(|s| s.label());
             let action = action.clone();
-            let disabled_class = if *enabled { "cmx-menu-item" } else { "cmx-menu-item cmx-disabled" };
+            let is_highlighted = highlight_id.read().as_deref() == Some(id.as_str());
+            let class = match (*enabled, is_highlighted) {
+                (false, _)    => "cmx-menu-item cmx-disabled",
+                (true, true)  => "cmx-menu-item cmx-amp-highlight",
+                (true, false) => "cmx-menu-item",
+            };
 
             rsx! {
                 div {
-                    class: disabled_class,
+                    class,
                     onclick: move |_| {
                         open_idx.set(None);
                         dispatch_local_action(&action, &on_action);
