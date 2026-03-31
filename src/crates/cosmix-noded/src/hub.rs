@@ -1,10 +1,7 @@
-//! cosmix-hub — Local WebSocket message broker for the cosmix appmesh.
+//! Hub module — WebSocket message broker for the cosmix appmesh.
 //!
-//! Apps connect via WebSocket at `ws://localhost:4200/ws`, register with a
-//! service name, and the hub routes AMP messages between them by `to` header.
-//!
-//! If the `to` address targets a remote mesh node (e.g. `files.mko.amp`),
-//! the hub bridges the message over WireGuard to that node's hub.
+//! Routes AMP messages between local services and bridges to remote
+//! mesh nodes over WireGuard.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -14,43 +11,15 @@ use axum::Router;
 use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::IntoResponse;
-use clap::Parser;
 use cosmix_mesh::{MeshConfig, MeshPeers};
 use cosmix_amp::amp::{self, AmpAddress, AmpMessage};
 use futures_util::{SinkExt, StreamExt};
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::{RwLock, mpsc, oneshot};
 
-#[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+// ── State ──
 
-// ── CLI ──
-
-#[derive(Parser)]
-#[command(name = "cosmix-hub", about = "Local WebSocket message broker for the cosmix appmesh")]
-struct Cli {
-    /// Port to listen on
-    #[arg(long, default_value = "4200")]
-    port: u16,
-
-    /// This node's name on the mesh (e.g. "cachyos", "mko")
-    #[arg(long, default_value = "localhost")]
-    node: String,
-
-    /// Path to mesh config file (peers list)
-    #[arg(long)]
-    mesh_config: Option<String>,
-}
-
-// ── App state ──
-
-/// Maps service name → sender for that service's WebSocket.
 type Registry = Arc<RwLock<HashMap<String, mpsc::UnboundedSender<String>>>>;
-
-/// Maps message id → sender for the caller who is waiting for a response.
-/// Used to route responses back to the originating connection (e.g. mesh bridge).
 type PendingResponses = Arc<RwLock<HashMap<String, mpsc::UnboundedSender<String>>>>;
-
-/// Tap subscribers receive copies of all routed AMP traffic (read-only observation).
 type TapSubscribers = Arc<RwLock<Vec<mpsc::UnboundedSender<String>>>>;
 
 #[derive(Clone)]
@@ -62,19 +31,18 @@ struct AppState {
     node_name: String,
 }
 
-// ── Main ──
+// ── Entry point ──
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    let _log = cosmix_daemon::init_tracing("cosmix_hubd");
-
-    let cli = Cli::parse();
-
-    // Load mesh config
-    let mesh_config = if let Some(ref path) = cli.mesh_config {
+pub async fn run(
+    port: u16,
+    node: String,
+    mesh_config_path: Option<String>,
+    ready_tx: oneshot::Sender<()>,
+) -> Result<()> {
+    let mesh_config = if let Some(ref path) = mesh_config_path {
         MeshConfig::load(path)?
     } else {
-        MeshConfig::load_default(&cli.node)
+        MeshConfig::load_default(&node)
     };
 
     tracing::info!(
@@ -83,18 +51,15 @@ async fn main() -> Result<()> {
         "Mesh config loaded"
     );
 
-    // Channel for messages arriving from remote hubs
     let (mesh_incoming_tx, mut mesh_incoming_rx) = mpsc::unbounded_channel::<AmpMessage>();
-
     let mesh = Arc::new(MeshPeers::new(mesh_config, mesh_incoming_tx));
     let registry: Registry = Arc::new(RwLock::new(HashMap::new()));
 
-    // Spawn a task to deliver messages from remote hubs to local services
+    // Deliver messages from remote hubs to local services
     let registry_for_mesh = registry.clone();
     tokio::spawn(async move {
         while let Some(msg) = mesh_incoming_rx.recv().await {
             let target = msg.to_addr().unwrap_or("").to_string();
-            // Strip mesh addressing — extract just the service name
             let service = if let Some(amp_addr) = AmpAddress::parse(&target) {
                 amp_addr.app.unwrap_or(target.clone())
             } else {
@@ -111,7 +76,6 @@ async fn main() -> Result<()> {
     });
 
     let pending_responses: PendingResponses = Arc::new(RwLock::new(HashMap::new()));
-
     let tap_subscribers: TapSubscribers = Arc::new(RwLock::new(Vec::new()));
 
     let state = AppState {
@@ -119,16 +83,19 @@ async fn main() -> Result<()> {
         pending_responses,
         tap_subscribers,
         mesh,
-        node_name: cli.node.clone(),
+        node_name: node.clone(),
     };
 
     let app = Router::new()
         .route("/ws", axum::routing::get(ws_handler))
         .with_state(state);
 
-    let addr = format!("0.0.0.0:{}", cli.port);
+    let addr = format!("0.0.0.0:{}", port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    tracing::info!(node = %cli.node, "Hub listening on ws://0.0.0.0:{}", cli.port);
+    tracing::info!(node = %node, "Hub listening on ws://0.0.0.0:{}", port);
+
+    // Signal that the listener is bound and ready
+    let _ = ready_tx.send(());
 
     axum::serve(listener, app).await?;
 
@@ -147,10 +114,8 @@ async fn ws_handler(
 async fn handle_socket(socket: WebSocket, state: AppState) {
     let (mut ws_sink, mut ws_stream) = socket.split();
 
-    // Channel for sending messages back to this client
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
 
-    // Spawn a task that forwards from the channel to the WebSocket sink
     let send_task = tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
             if ws_sink.send(Message::Text(msg.into())).await.is_err() {
@@ -159,10 +124,8 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         }
     });
 
-    // Track this connection's registered service name
     let mut service_name: Option<String> = None;
 
-    // Read messages from the WebSocket
     while let Some(Ok(msg)) = ws_stream.next().await {
         let text = match msg {
             Message::Text(t) => t.to_string(),
@@ -182,7 +145,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
             }
         };
 
-        // Check if this is a response to a pending request (e.g. from mesh bridge)
+        // Check if this is a response to a pending request
         if amp_msg.message_type() == Some("response") {
             if let Some(id) = amp_msg.get("id") {
                 let pending = state.pending_responses.read().await;
@@ -195,17 +158,15 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
             }
         }
 
-        // Check if message is addressed to the hub itself
         let target = amp_msg.to_addr().unwrap_or("hub");
         if target == "hub" {
             handle_hub_command(&amp_msg, &tx, &state, &mut service_name).await;
             continue;
         }
 
-        // Check if target is a mesh address (e.g. "files.mko.amp")
+        // Mesh address routing
         if let Some(amp_addr) = AmpAddress::parse(target) {
             if !amp_addr.is_for_node(&state.node_name) {
-                // Remote node — bridge via mesh
                 let node = amp_addr.node.clone();
                 if state.mesh.is_remote_peer(&node) {
                     let tx_clone = tx.clone();
@@ -232,7 +193,6 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                 continue;
             }
 
-            // Local node — extract the service name from the AMP address
             let local_service = amp_addr.app.as_deref().unwrap_or(target);
             if local_service == "hub" {
                 handle_hub_command(&amp_msg, &tx, &state, &mut service_name).await;
@@ -248,7 +208,6 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         broadcast_tap(&state.tap_subscribers, &text).await;
     }
 
-    // Cleanup: remove service from registry on disconnect
     if let Some(name) = &service_name {
         state.registry.write().await.remove(name);
         tracing::info!("Service '{}' disconnected", name);
@@ -257,10 +216,6 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     send_task.abort();
 }
 
-/// Route a message to a local service by name.
-///
-/// If the message has an `id` header, registers a pending response so the
-/// reply routes back to the caller (important for mesh-bridged requests).
 async fn route_local(
     registry: &Registry,
     pending_responses: &PendingResponses,
@@ -271,7 +226,6 @@ async fn route_local(
 ) {
     let reg = registry.read().await;
     if let Some(target_tx) = reg.get(service) {
-        // Track pending response so reply routes back to caller
         if let Some(id) = msg.get("id") {
             pending_responses.write().await.insert(id.to_string(), caller_tx.clone());
         }
@@ -294,13 +248,11 @@ async fn route_local(
     }
 }
 
-/// Send a copy of a routed message to all tap subscribers (read-only observation).
 async fn broadcast_tap(tap_subscribers: &TapSubscribers, raw: &str) {
     let taps = tap_subscribers.read().await;
     if taps.is_empty() {
         return;
     }
-    // Send to all tap subscribers, remove any that have disconnected
     let mut disconnected = Vec::new();
     for (i, tap_tx) in taps.iter().enumerate() {
         if tap_tx.send(raw.to_string()).is_err() {
@@ -327,7 +279,6 @@ async fn handle_hub_command(
     let command = msg.command_name().unwrap_or("");
     let msg_id = msg.get("id");
 
-    // Helper: build a response that echoes the request id
     let respond = |rc: &str| -> AmpMessage {
         let mut resp = AmpMessage::new()
             .with_header("type", "response")

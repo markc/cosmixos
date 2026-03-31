@@ -4,23 +4,21 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "ARexx-style scripting: script discovery, TOML definitions, variable substitution, and menu generation"
+description = "ARexx-style scripting: Mix runtime bridge, script discovery, and menu generation"
 
 [lib]
 name = "cosmix_script"
 path = "src/lib.rs"
 
 [features]
-default = ["mix"]
-mix = ["dep:mix-core", "dep:tokio"]
+default = []
 menu = ["dep:cosmix_ui"]
 
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
-toml_cfg = { workspace = true }
 tracing = { workspace = true }
 cosmix_client = { package = "cosmix-lib-client", path = "../cosmix-lib-client" }
 cosmix_ui = { package = "cosmix-lib-ui", path = "../cosmix-lib-ui", optional = true, default-features = false }
-mix-core = { path = "../../../../.mix/src/crates/mix-core", features = ["json"], optional = true }
-tokio = { workspace = true, optional = true }
+mix-core = { path = "../../../../.mix/src/crates/mix-core", features = ["json"] }
+tokio = { workspace = true }

@@ -24,13 +24,10 @@ members = [
     "crates/cosmix-view",
     "crates/cosmix-wg",
     # Daemons
-    "crates/cosmix-configd",
-    "crates/cosmix-hubd",
+    "crates/cosmix-noded",
     "crates/cosmix-indexd",
     "crates/cosmix-maild",
-    "crates/cosmix-mond",
     "crates/cosmix-webd",
-    "crates/cosmix-logd",
     "crates/cosmix-mcp",
     "crates/cosmix-claude",
 ]

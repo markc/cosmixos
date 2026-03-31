@@ -1,7 +1,7 @@
 # Mix Enhancements for Cosmix AMP Scripting
 
 **Date:** 2026-03-31
-**Status:** Plan — implement in ~/.mix, then update ~/.cosmix
+**Status:** Complete — Mix-side (named args, dotted commands) and cosmix-side (prelude, TOML removal) both done
 
 ## Context
 

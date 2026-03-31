@@ -6,17 +6,19 @@ Last updated: 2026-03-31
 
 - Repo moved from `~/.gh/cosmixos` to `~/.cosmix/`, GitHub renamed to `markc/cosmix`
 - Cargo workspace lives in `src/` — top level is clean (README, CLAUDE.md, LICENSE)
-- 28 crates: 7 libs, 13 apps, 8 daemons (including cosmix-claude)
+- 25 crates: 7 libs, 13 apps, 5 daemons (cosmix-noded replaced hubd+configd+mond+logd)
 
-## Scripting: Mix (not Lua)
+## Scripting: Mix only (Lua removed, TOML removed)
 
-**Lua is fully removed.** All scripting uses [Mix](https://github.com/markc/mix) (`~/.mix/`), a pure-Rust ARexx-inspired language purpose-built for cosmix:
+**Lua and TOML scripting are fully removed.** All scripting uses [Mix](https://github.com/markc/mix) (`~/.mix/`), a pure-Rust ARexx-inspired language purpose-built for cosmix:
 
 - `send`, `address`, `emit` are language keywords (not library calls)
 - Pure Rust, no C deps, compiles to `wasm32-unknown-unknown`
 - Real interactive shell with pipes, redirects, tab completion, job control
 - `mix-core` embedded in `cosmix-lib-script` and `cosmix-scripts` as path dep
 - AMP IPC over Unix sockets; full mesh addresses reserved for future WebSocket routing
+- **Cosmix prelude** (`~/.config/cosmix/prelude.mx`) loaded before every script — provides `ensure_running()`, `wait_for_port()`, `hub_services()`
+- Scripts use `-- @script`, `-- @shortcut`, `-- @description` comment directives for metadata
 
 ## App Launch Policy (decided 2026-03-31)
 
@@ -154,12 +156,13 @@ Full implementation of AMP-driven UI control (the ARexx-at-mesh-scale vision):
 - **Phase 1-2:** COSMIC desktop + Dioxus 0.7 toolchain validated
 - **Phase 3 J1-J3:** JMAP Core + Email + SMTP + Calendars + Contacts (22 methods)
 - **Phase 4:** CalDAV/CardDAV pivoted to native JMAP methods
-- **cosmix-lib-script + cosmix-scripts:** Mix scripting integrated (Lua removed)
+- **cosmix-lib-script + cosmix-scripts:** Mix-only scripting (Lua + TOML removed, cosmix prelude added)
 - **cosmix-mail UI:** Compose, Reply, Forward, Actions toolbar, unread badges
 - **cosmix-indexd:** Lazy load/unload, 7MB idle, deployed to mko
 - **Server Email/set create:** Upload blob -> create email record from MIME
 - **AMP-addressable UI:** Full ui.* and menu.* command vocabulary
 - **Repo restructure:** src/ layout, GitHub renamed to markc/cosmix
+- **cosmix-noded:** Consolidated hub+config+monitor+logger into single binary (standalone crates deleted)
 
 ## Fixes Applied (2026-03-25)
 

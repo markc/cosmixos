@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -92,6 +93,42 @@ pub fn create_evaluator(
     (eval, stdout, stderr)
 }
 
+/// Path to the cosmix prelude, loaded before every user script.
+fn prelude_path() -> PathBuf {
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        PathBuf::from(xdg)
+    } else if let Ok(home) = std::env::var("HOME") {
+        PathBuf::from(home).join(".config")
+    } else {
+        PathBuf::from("/tmp")
+    }
+    .join("cosmix")
+    .join("prelude.mx")
+}
+
+/// Source the cosmix prelude into an evaluator. Errors are logged, not fatal.
+async fn source_prelude(eval: &mut Evaluator) {
+    let path = prelude_path();
+    let Ok(source) = std::fs::read_to_string(&path) else {
+        return; // No prelude file — that's fine
+    };
+
+    let mut lexer = mix_core::lexer::Lexer::new(&source);
+    let Ok(tokens) = lexer.tokenize() else {
+        tracing::warn!("Cosmix prelude parse error (lexer): {}", path.display());
+        return;
+    };
+    let mut parser = mix_core::parser::Parser::new(tokens);
+    let Ok(stmts) = parser.parse_program() else {
+        tracing::warn!("Cosmix prelude parse error (parser): {}", path.display());
+        return;
+    };
+
+    if let Err(e) = eval.execute(&stmts).await {
+        tracing::warn!("Cosmix prelude execution error: {e}");
+    }
+}
+
 /// Execute a Mix script source string and return a `ScriptResult`.
 pub async fn execute_mix(
     source: &str,
@@ -123,8 +160,9 @@ pub async fn execute_mix(
         }
     };
 
-    // Execute
+    // Create evaluator, source prelude, then run user script
     let (mut eval, stdout, _stderr) = create_evaluator(hub, service_name, app_vars);
+    source_prelude(&mut eval).await;
 
     match eval.execute(&stmts).await {
         Ok(_) => {

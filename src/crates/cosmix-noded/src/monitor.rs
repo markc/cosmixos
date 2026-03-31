@@ -1,37 +1,12 @@
-//! cosmix-mond — Headless system monitor daemon for the cosmix appmesh.
+//! Monitor module — serves system metrics over AMP.
 //!
-//! Registers as "mon" on the local hub and responds to:
-//! - `mon.status` — CPU, memory, disk, load average, uptime
-//! - `mon.processes` — top processes by CPU usage
-//!
-//! Designed to run on all mesh nodes (headless servers + workstations).
-//! The companion `cosmix-mon` GUI queries this daemon via the hub.
+//! Handles mon.status and mon.processes.
 
 use std::sync::Arc;
 
 use anyhow::Result;
-use clap::Parser;
 use serde::Serialize;
 use sysinfo::System;
-
-#[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
-
-// ── CLI ──
-
-#[derive(Parser)]
-#[command(name = "cosmix-mond", about = "Headless system monitor daemon for the cosmix appmesh")]
-struct Cli {
-    /// Hub WebSocket URL
-    #[arg(long, default_value = "ws://localhost:4200/ws")]
-    hub_url: String,
-
-    /// Service name to register on the hub
-    #[arg(long, default_value = "mon")]
-    service_name: String,
-}
-
-// ── System data ──
 
 #[derive(Clone, Debug, Serialize)]
 struct SystemStatus {
@@ -128,7 +103,16 @@ fn gather_processes(limit: usize) -> Vec<ProcessInfo> {
     procs
 }
 
-// ── Hub command handling ──
+pub async fn run(hub_url: &str) -> Result<()> {
+    let client = cosmix_client::HubClient::connect("mon", hub_url).await?;
+    let client = Arc::new(client);
+    tracing::info!("Monitor module registered on hub");
+
+    handle_hub_commands(client).await;
+
+    tracing::info!("Monitor module stopped");
+    Ok(())
+}
 
 async fn handle_hub_commands(client: Arc<cosmix_client::HubClient>) {
     let mut rx = match client.incoming_async().await {
@@ -166,33 +150,4 @@ async fn handle_hub_commands(client: Arc<cosmix_client::HubClient>) {
             }
         }
     }
-}
-
-// ── Main ──
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    let _log = cosmix_daemon::init_tracing("cosmix_mond");
-
-    let cli = Cli::parse();
-
-    tracing::info!(
-        service = %cli.service_name,
-        hub = %cli.hub_url,
-        "Starting cosmix-mond"
-    );
-
-    let client = cosmix_client::HubClient::connect(&cli.service_name, &cli.hub_url).await?;
-    let client = Arc::new(client);
-
-    tracing::info!(
-        service = %cli.service_name,
-        "Registered on hub, serving mon.status and mon.processes"
-    );
-
-    // Run the command handler until the hub connection drops
-    handle_hub_commands(client).await;
-
-    tracing::info!("Hub connection closed, exiting");
-    Ok(())
 }

@@ -1,40 +1,12 @@
-//! cosmix-configd — Config daemon for the cosmix appmesh.
+//! Config module — serves settings over AMP and watches for file changes.
 //!
-//! Registers as "config" on the local hub and responds to:
-//! - `config.get` — get a setting by dot-path key
-//! - `config.set` — update a setting (saves to disk + notifies watchers)
-//! - `config.list` — list settings in a section or all sections
-//! - `config.sections` — list section names
-//! - `config.watch` — subscribe to change notifications
-//! - `config.reload` — reload settings from disk
-//!
-//! Watches `~/.config/cosmix/settings.toml` for external changes and
-//! broadcasts `config.changed` events to watchers.
+//! Handles config.get, config.set, config.list, config.sections,
+//! config.watch, config.reload.
 
 use std::sync::Arc;
 
 use anyhow::Result;
-use clap::Parser;
 use tokio::sync::RwLock;
-
-#[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
-
-// ── CLI ──
-
-#[derive(Parser)]
-#[command(name = "cosmix-configd", about = "Config daemon — serves settings over AMP")]
-struct Cli {
-    /// Hub WebSocket URL
-    #[arg(long, default_value = "ws://localhost:4200/ws")]
-    hub_url: String,
-
-    /// Service name to register on the hub
-    #[arg(long, default_value = "config")]
-    service_name: String,
-}
-
-// ── Shared state ──
 
 struct AppState {
     settings: RwLock<cosmix_config::CosmixSettings>,
@@ -42,7 +14,33 @@ struct AppState {
     client: cosmix_client::HubClient,
 }
 
-// ── Hub command handling ──
+pub async fn run(hub_url: &str) -> Result<()> {
+    let settings = cosmix_config::store::load()?;
+    tracing::info!(
+        path = %cosmix_config::store::config_path().display(),
+        "Loaded settings"
+    );
+
+    let client = cosmix_client::HubClient::connect("config", hub_url).await?;
+    tracing::info!("Config module registered on hub");
+
+    let state = Arc::new(AppState {
+        settings: RwLock::new(settings),
+        watchers: RwLock::new(Vec::new()),
+        client,
+    });
+
+    // Spawn file watcher
+    let watcher_state = state.clone();
+    tokio::spawn(async move {
+        watch_config_file(watcher_state).await;
+    });
+
+    handle_hub_commands(state).await;
+
+    tracing::info!("Config module stopped");
+    Ok(())
+}
 
 async fn handle_hub_commands(state: Arc<AppState>) {
     let mut rx = match state.client.incoming_async().await {
@@ -107,7 +105,6 @@ async fn handle_set(state: &AppState, cmd: &cosmix_client::IncomingCommand) -> R
             .map_err(|e| e.to_string())?;
     }
 
-    // Notify watchers
     notify_watchers(state, &serde_json::json!({
         "key": key_owned,
         "value": value,
@@ -175,8 +172,6 @@ async fn notify_watchers(state: &AppState, payload: &serde_json::Value) {
     }
 }
 
-// ── File watcher ──
-
 async fn watch_config_file(state: Arc<AppState>) {
     use notify::{Watcher, RecursiveMode, Event, EventKind};
 
@@ -198,7 +193,6 @@ async fn watch_config_file(state: Arc<AppState>) {
         }
     };
 
-    // Watch the config directory (parent) so we catch file creation too
     let watch_dir = config_path.parent().unwrap_or(&config_path);
     if let Err(e) = watcher.watch(watch_dir, RecursiveMode::NonRecursive) {
         tracing::warn!("Failed to watch {}: {e}", watch_dir.display());
@@ -207,13 +201,12 @@ async fn watch_config_file(state: Arc<AppState>) {
 
     tracing::info!(path = %config_path.display(), "Watching settings file for changes");
 
-    // Debounce: wait 500ms after last event before reloading
     loop {
         if rx.recv().await.is_none() {
             break;
         }
 
-        // Debounce — drain any events that arrive within 500ms
+        // Debounce — drain events within 500ms
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         while rx.try_recv().is_ok() {}
 
@@ -228,51 +221,4 @@ async fn watch_config_file(state: Arc<AppState>) {
             }
         }
     }
-}
-
-// ── Main ──
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    let _log = cosmix_daemon::init_tracing("cosmix_configd");
-
-    let cli = Cli::parse();
-
-    // Load settings (creates default file if missing)
-    let settings = cosmix_config::store::load()?;
-    tracing::info!(
-        path = %cosmix_config::store::config_path().display(),
-        "Loaded settings"
-    );
-
-    tracing::info!(
-        service = %cli.service_name,
-        hub = %cli.hub_url,
-        "Starting cosmix-configd"
-    );
-
-    let client = cosmix_client::HubClient::connect(&cli.service_name, &cli.hub_url).await?;
-
-    tracing::info!(
-        service = %cli.service_name,
-        "Registered on hub, serving config.get/set/list/sections/watch/reload"
-    );
-
-    let state = Arc::new(AppState {
-        settings: RwLock::new(settings),
-        watchers: RwLock::new(Vec::new()),
-        client,
-    });
-
-    // Spawn file watcher
-    let watcher_state = state.clone();
-    tokio::spawn(async move {
-        watch_config_file(watcher_state).await;
-    });
-
-    // Run the command handler until the hub connection drops
-    handle_hub_commands(state).await;
-
-    tracing::info!("Hub connection closed, exiting");
-    Ok(())
 }

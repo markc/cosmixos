@@ -24,7 +24,7 @@ The cosmix scripting layer replaced Lua (via the `mlua` crate, which wraps C-bas
 
 | Crate | Role |
 |-------|------|
-| `cosmix-lib-script` | Mix runtime bridge -- script discovery, TOML definitions, variable substitution, menu generation, and hub connectivity via `cosmix_client` |
+| `cosmix-lib-script` | Mix runtime bridge -- script discovery, Mix execution with cosmix prelude, menu generation, and hub connectivity via `cosmix_client` |
 | `cosmix-scripts` | Mix + Bash script manager GUI -- list, run, edit, delete scripts |
 
 ## Path Dependencies
@@ -32,14 +32,14 @@ The cosmix scripting layer replaced Lua (via the `mlua` crate, which wraps C-bas
 Both crates depend on `mix-core` as a path dependency:
 
 ```toml
-# cosmix-lib-script (optional, behind "mix" feature, on by default)
-mix-core = { path = "../../../../.mix/mix/crates/mix-core", features = ["json"] }
+# cosmix-lib-script (required)
+mix-core = { path = "../../../../.mix/src/crates/mix-core", features = ["json"] }
 
 # cosmix-scripts (required)
-mix-core = { path = "../../../../.mix/mix/crates/mix-core", features = ["json"] }
+mix-core = { path = "../../../../.mix/src/crates/mix-core", features = ["json"] }
 ```
 
-From `crates/<crate>/` the path traverses up four levels to `~/` then into `.mix/mix/crates/mix-core`.
+From `src/crates/<crate>/` the path traverses up four levels to `~/` then into `.mix/src/crates/mix-core`.
 
 ## Historical Documents
 

@@ -24,7 +24,7 @@ Monorepo with Cargo workspace under `src/`. Top level is clean (docs + config on
 | `cosmix-lib-client` | `cosmix_client` | AMP WebSocket client (native + WASM) |
 | `cosmix-lib-config` | `cosmix_config` | Typed config structs + TOML load/save |
 | `cosmix-lib-mesh` | `cosmix_mesh` | WireGuard mesh networking, WebSocket peer sync |
-| `cosmix-lib-script` | `cosmix_script` | Script discovery, TOML defs, Mix runtime bridge, User menu |
+| `cosmix-lib-script` | `cosmix_script` | Mix script discovery, runtime bridge, cosmix prelude, User menu |
 | `cosmix-lib-ui` | `cosmix_ui` | Shared Dioxus components, theme, icons |
 
 ### GUI Apps
@@ -49,15 +49,13 @@ Monorepo with Cargo workspace under `src/`. Top level is clean (docs + config on
 
 | Crate | Purpose |
 |-------|---------|
+| `cosmix-noded` | **Consolidated node daemon** — hub + config + monitor + logger in one binary |
 | `cosmix-claude` | Claude Code agent daemon |
-| `cosmix-configd` | Config watcher, serves settings via AMP |
-| `cosmix-hubd` | WebSocket message broker |
 | `cosmix-indexd` | Semantic indexing + vector storage (candle + sqlite-vec) |
-| `cosmix-logd` | Structured log aggregation |
 | `cosmix-maild` | JMAP (RFC 8620/8621) + SMTP mail server |
 | `cosmix-mcp` | Model Context Protocol bridge for Claude Code |
-| `cosmix-mond` | System monitor daemon |
 | `cosmix-webd` | WASM app server + CMS API |
+
 
 External path dependencies:
 - `spamlite` at `~/.gh/spamlite` (Bayesian spam classifier)

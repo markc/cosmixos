@@ -1,8 +1,8 @@
-//! Script discovery — scan the scripts directory for TOML and Mix definitions.
+//! Script discovery — scan the scripts directory for Mix script files.
 
 use std::path::PathBuf;
 
-use crate::types::{Script, ScriptDef, ScriptMeta};
+use crate::types::{Script, ScriptMeta};
 
 /// Returns the scripts directory: `~/.config/cosmix/scripts/`.
 pub fn scripts_dir() -> PathBuf {
@@ -40,32 +40,19 @@ pub fn discover_scripts(service_name: &str) -> Vec<(String, Script)> {
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_default();
 
-            match ext {
-                Some("toml") => match parse_toml_script(&path) {
-                    Ok(def) => scripts.push((id, Script::Toml(def))),
-                    Err(e) => {
-                        tracing::warn!("Failed to parse script {}: {e}", path.display());
-                    }
-                },
-                Some("mix") => match parse_mix_meta(&path) {
-                    Ok(meta) => scripts.push((id, Script::Mix { meta, path })),
+            if ext == Some("mx") {
+                match parse_mix_meta(&path) {
+                    Ok(meta) => scripts.push((id, Script { meta, path })),
                     Err(e) => {
                         tracing::warn!("Failed to read script {}: {e}", path.display());
                     }
-                },
-                _ => {}
+                }
             }
         }
     }
 
     scripts.sort_by(|a, b| a.1.meta().name.cmp(&b.1.meta().name));
     scripts
-}
-
-/// Parse a single TOML script definition file.
-fn parse_toml_script(path: &std::path::Path) -> Result<ScriptDef, String> {
-    let content = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-    toml_cfg::from_str(&content).map_err(|e| e.to_string())
 }
 
 /// Parse Mix script metadata from comment headers.

@@ -9,7 +9,7 @@ use cosmix_ui::menu::{action, action_shortcut, separator, submenu, MenuItem, Sho
 
 use crate::discovery::discover_scripts;
 use crate::executor;
-use crate::types::{ScriptContext, ScriptResult};
+use crate::types::ScriptResult;
 
 /// Build a "User" submenu from script files for the given service.
 ///
@@ -57,8 +57,7 @@ pub async fn handle_script_action(
     let scripts = discover_scripts(service_name);
     let (_, script) = scripts.iter().find(|(id, _)| id == script_id)?;
 
-    let mut ctx = ScriptContext::new(service_name, vars.clone());
-    let result = executor::execute_script(script, &mut ctx, hub).await;
+    let result = executor::execute_script(script, service_name, vars, hub).await;
 
     if let Some(ref err) = result.error {
         tracing::warn!("Script '{script_id}' error: {err}");

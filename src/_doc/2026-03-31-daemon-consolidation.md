@@ -1,7 +1,7 @@
 # Daemon Consolidation — cosmix-noded
 
 **Date:** 2026-03-31
-**Status:** Design
+**Status:** Phase 1+2 complete — cosmix-noded binary built with hub+config+monitor+logger. Standalone crates kept for rollback.
 
 ## The Problem
 
