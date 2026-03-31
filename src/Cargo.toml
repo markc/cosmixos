@@ -23,6 +23,7 @@ members = [
     "crates/cosmix-shell",
     "crates/cosmix-view",
     "crates/cosmix-wg",
+    "crates/cosmix-dopus",
     # Daemons
     "crates/cosmix-noded",
     "crates/cosmix-indexd",

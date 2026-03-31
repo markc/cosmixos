@@ -156,6 +156,20 @@ RC codes: 0=success, 5=warning, 10=error, 20=failure. Used across Unix sockets (
 - **mimalloc** allocator in all binaries
 - **`paru`** for AUR packages on CachyOS/Arch
 
+## WebKitGTK UI Rules (CRITICAL — read before any UI work)
+
+Dioxus desktop uses WebKitGTK on Linux. These rules prevent layout shifts and rendering bugs:
+
+- **Borders: use `rgba()` concrete values, NEVER CSS variables** — `var(--border)` can resolve to transparent, collapsing borders to 0px and shifting layout. Use `rgba(128,128,128,0.4)` for borders that must survive state changes.
+- **State changes: only change `background` and `color`** — never change border, padding, margin, or font properties on hover/selected/active states. Any property change can trigger WebKitGTK reflow.
+- **Buttons: use `div` + `onclick`** for app chrome — bypasses all WebKitGTK native form control styling. The global `all: unset` in theme.rs helps but `div` is safest.
+- **No native HTML5 drag** — crashes Wayland compositor. Use mousedown/mousemove/mouseup for custom drag.
+- **Font weight: specify lighter than intended** — WebKitGTK renders ~100 weight units heavier (300 renders as 400).
+- **Prefer `rem` over `px`** — pixel units render differently in WebKitGTK vs Chromium.
+- **No `backdrop-filter`** — not implemented in WebKitGTK.
+- **Global reset already in theme.rs** — `all: unset` on form elements, `box-sizing: border-box` on everything.
+- **UI foundation plan:** see `src/_doc/2026-03-31-dioxus-ui-foundation.md` — Tailwind v4 + dioxus-primitives + custom widgets.
+
 ## Gotchas
 
 - Linux WebKit black screen: cosmix-mail sets `WEBKIT_DISABLE_COMPOSITING_MODE=1` before Dioxus launch

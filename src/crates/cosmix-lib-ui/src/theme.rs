@@ -137,6 +137,21 @@ html, body, #main {{
 ::-webkit-scrollbar-track {{ background: transparent; }}
 ::-webkit-scrollbar-thumb {{ background: {scroll_thumb}; border-radius: 4px; }}
 ::-webkit-scrollbar-thumb:hover {{ background: {scroll_hover}; }}
+*, *::before, *::after {{ box-sizing: border-box; }}
+button, input, select, textarea {{
+  all: unset;
+  font: inherit;
+  color: inherit;
+}}
+button {{
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}}
+input, textarea {{
+  cursor: text;
+}}
 button:hover {{ filter: brightness(1.15); }}
 input:focus {{ border-color: var(--accent) !important; }}
 textarea {{ caret-color: var(--accent); }}
