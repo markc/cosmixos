@@ -32,6 +32,7 @@ members = [
     "crates/cosmix-webd",
     "crates/cosmix-logd",
     "crates/cosmix-mcp",
+    "crates/cosmix-claude",
 ]
 
 [workspace.package]

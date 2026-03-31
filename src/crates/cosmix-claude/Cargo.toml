@@ -1,0 +1,21 @@
+[package]
+name = "cosmix-claude"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Claude AI AMP port — exposes Claude CLI as a Cosmix service on claude.sock"
+
+[[bin]]
+name = "cosmix-claude"
+path = "src/main.rs"
+
+[dependencies]
+cosmix_daemon = { package = "cosmix-lib-daemon", path = "../cosmix-lib-daemon" }
+cosmix_amp = { package = "cosmix-lib-amp", path = "../cosmix-lib-amp" }
+mimalloc.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+libc = "0.2"
