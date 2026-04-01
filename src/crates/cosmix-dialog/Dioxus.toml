@@ -1,0 +1,6 @@
+[application]
+name = "cosmix-dialog"
+default_platform = "desktop"
+
+[desktop]
+enable_default_menu_bar = false

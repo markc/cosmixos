@@ -85,18 +85,21 @@ pub fn standard_file_menu(extra: Vec<MenuItem>) -> MenuItem {
     submenu("File", items)
 }
 
-/// Help menu with an About item.
-pub fn standard_help_menu(app_name: &str) -> MenuItem {
+/// Help menu with optional extra items before About.
+pub fn standard_help_menu(app_name: &str, extra: Vec<MenuItem>) -> MenuItem {
     let about_id = "about";
-    submenu("Help", vec![
-        MenuItem::Action {
-            id: about_id.to_string(),
-            label: format!("About {app_name}"),
-            shortcut: None,
-            action: MenuAction::Local(about_id.to_string()),
-            enabled: true,
-        },
-    ])
+    let mut items = extra;
+    if !items.is_empty() {
+        items.push(separator());
+    }
+    items.push(MenuItem::Action {
+        id: about_id.to_string(),
+        label: format!("About {app_name}"),
+        shortcut: None,
+        action: MenuAction::Local(about_id.to_string()),
+        enabled: true,
+    });
+    submenu("Help", items)
 }
 
 // ── MenuBarDef builder ─────────────────────────────────────────────────────

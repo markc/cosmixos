@@ -55,7 +55,7 @@ use cosmix_ui::dx_components::virtual_list::*;
 // Cosmix menu system
 use cosmix_ui::app_init::{use_theme_css, THEME};
 use cosmix_ui::menu::{
-    action, menubar, separator, slot, standard_file_menu, standard_help_menu, submenu, MenuBar,
+    action, menubar, slot, standard_file_menu, standard_help_menu, submenu, MenuBar,
     SLOT_REGISTRY, MenuItem, MenuAction,
 };
 
@@ -136,11 +136,10 @@ fn app() -> Element {
             action("slot_remove_service", "Remove Service Menu"),
             action("slot_clear_all", "Clear All Slots"),
         ]),
-        submenu("Theme", vec![
+        standard_help_menu("cosmix-preview", vec![
             action("theme_light", "Light Mode"),
             action("theme_dark", "Dark Mode"),
         ]),
-        standard_help_menu("cosmix-preview"),
     ]);
 
     *cosmix_ui::menu::MENU_DEF.write() = Some(app_menu.clone());

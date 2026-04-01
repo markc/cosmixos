@@ -96,6 +96,13 @@ pub fn generate_css(p: &ThemeParams) -> String {
         (oklch(0.75, 0.015, h), oklch(0.65, 0.02, h))
     };
 
+    // dx-components light/dark toggle: "initial" activates, empty deactivates
+    let (dark_toggle, light_toggle) = if p.dark {
+        ("initial", " ")
+    } else {
+        (" ", "initial")
+    };
+
     format!(
         r#":root {{
   --bg-primary: {bg1};
@@ -125,6 +132,8 @@ pub fn generate_css(p: &ThemeParams) -> String {
   --duration-fast: 150ms;
   --duration-base: 200ms;
   /* dx-components bridge — maps their vars to our OKLCH theme */
+  --dark: {dark_toggle};
+  --light: {light_toggle};
   --primary-color: {bg1};
   --primary-color-1: {bg1};
   --primary-color-2: {bg2};
