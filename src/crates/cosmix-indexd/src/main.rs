@@ -9,15 +9,205 @@ use candle_transformers::models::nomic_bert::{self, NomicBertModel};
 use hf_hub::{api::sync::Api, Repo, RepoType};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokenizers::Tokenizer;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::sync::Mutex;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 const EMBEDDING_DIM: usize = 768;
+
+// --- Circuit breaker for model loading ---
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CircuitState {
+    Closed,
+    Open { opened_at: Instant },
+    HalfOpen,
+}
+
+struct CircuitBreaker {
+    state: CircuitState,
+    consecutive_failures: u32,
+    failure_threshold: u32,
+    cooldown: Duration,
+}
+
+impl CircuitBreaker {
+    fn new(failure_threshold: u32, cooldown: Duration) -> Self {
+        Self {
+            state: CircuitState::Closed,
+            consecutive_failures: 0,
+            failure_threshold,
+            cooldown,
+        }
+    }
+
+    fn allow_request(&mut self) -> bool {
+        match self.state {
+            CircuitState::Closed | CircuitState::HalfOpen => true,
+            CircuitState::Open { opened_at } => {
+                if opened_at.elapsed() >= self.cooldown {
+                    self.state = CircuitState::HalfOpen;
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    }
+
+    fn record_success(&mut self) {
+        self.consecutive_failures = 0;
+        self.state = CircuitState::Closed;
+    }
+
+    fn record_failure(&mut self) {
+        match self.state {
+            CircuitState::Closed => {
+                self.consecutive_failures += 1;
+                if self.consecutive_failures >= self.failure_threshold {
+                    warn!("model circuit breaker OPEN after {} consecutive failures", self.consecutive_failures);
+                    self.state = CircuitState::Open {
+                        opened_at: Instant::now(),
+                    };
+                }
+            }
+            CircuitState::HalfOpen => {
+                warn!("model circuit breaker re-OPEN (half-open probe failed)");
+                self.state = CircuitState::Open {
+                    opened_at: Instant::now(),
+                };
+            }
+            CircuitState::Open { .. } => {}
+        }
+    }
+
+    fn state_name(&self) -> &'static str {
+        match self.state {
+            CircuitState::Closed => "closed",
+            CircuitState::Open { .. } => "open",
+            CircuitState::HalfOpen => "half-open",
+        }
+    }
+}
+
+// --- Embedding cache (FNV-1a keyed by text+prefix, TTL eviction) ---
+
+const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+const EMBED_CACHE_TTL_SECS: u64 = 300; // 5 minutes
+const EMBED_CACHE_MAX_ENTRIES: usize = 512;
+
+struct CachedEmbedding {
+    embedding: Vec<f32>,
+    created_at: Instant,
+}
+
+struct EmbeddingCache {
+    entries: HashMap<u64, CachedEmbedding>,
+    ttl: Duration,
+    max_entries: usize,
+    hits: u64,
+    misses: u64,
+}
+
+impl EmbeddingCache {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            ttl: Duration::from_secs(EMBED_CACHE_TTL_SECS),
+            max_entries: EMBED_CACHE_MAX_ENTRIES,
+            hits: 0,
+            misses: 0,
+        }
+    }
+
+    fn lookup(&mut self, text: &str, prefix: &str) -> Option<Vec<f32>> {
+        let key = fnv1a_hash(text, prefix);
+        if let Some(entry) = self.entries.get(&key) {
+            if entry.created_at.elapsed() < self.ttl {
+                self.hits += 1;
+                return Some(entry.embedding.clone());
+            }
+            self.entries.remove(&key);
+        }
+        self.misses += 1;
+        None
+    }
+
+    fn store(&mut self, text: &str, prefix: &str, embedding: Vec<f32>) {
+        if self.entries.len() >= self.max_entries {
+            // Evict oldest entry
+            if let Some(&oldest_key) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, v)| v.created_at)
+                .map(|(k, _)| k)
+            {
+                self.entries.remove(&oldest_key);
+            }
+        }
+        let key = fnv1a_hash(text, prefix);
+        self.entries.insert(
+            key,
+            CachedEmbedding {
+                embedding,
+                created_at: Instant::now(),
+            },
+        );
+    }
+
+    /// Look up a batch, returning cached embeddings and indices that need computing.
+    fn lookup_batch(
+        &mut self,
+        texts: &[String],
+        prefix: &str,
+    ) -> (Vec<Option<Vec<f32>>>, Vec<usize>) {
+        let mut results = Vec::with_capacity(texts.len());
+        let mut needs_embed = Vec::new();
+        for (i, text) in texts.iter().enumerate() {
+            match self.lookup(text, prefix) {
+                Some(emb) => results.push(Some(emb)),
+                None => {
+                    results.push(None);
+                    needs_embed.push(i);
+                }
+            }
+        }
+        (results, needs_embed)
+    }
+}
+
+fn fnv1a_hash(text: &str, prefix: &str) -> u64 {
+    let mut hash = FNV_OFFSET_BASIS;
+    for byte in prefix.bytes().chain(text.bytes()) {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
+// --- Content hash for deduplication ---
+
+fn content_hash(text: &str, source: &str) -> Vec<u8> {
+    // FNV-1a 128-bit hash (two 64-bit passes with different seeds)
+    let mut h1 = FNV_OFFSET_BASIS;
+    let mut h2 = 0x6c62_272e_07bb_0142_u64; // second seed
+    for byte in source.bytes().chain(b":".iter().copied()).chain(text.bytes()) {
+        h1 ^= u64::from(byte);
+        h1 = h1.wrapping_mul(FNV_PRIME);
+        h2 ^= u64::from(byte);
+        h2 = h2.wrapping_mul(0x0000_0100_0000_01c9); // different prime
+    }
+    let mut out = Vec::with_capacity(16);
+    out.extend_from_slice(&h1.to_le_bytes());
+    out.extend_from_slice(&h2.to_le_bytes());
+    out
+}
 
 // --- Request/Response types ---
 
@@ -121,6 +311,7 @@ struct EmbedResponse {
 #[derive(Serialize)]
 struct StoreResponse {
     stored: usize,
+    duplicates: usize,
     ids: Vec<i64>,
 }
 
@@ -169,6 +360,10 @@ struct StatsResponse {
     total_vectors: usize,
     db_size_bytes: u64,
     model_loaded: bool,
+    model_circuit: String,
+    embed_cache_entries: usize,
+    embed_cache_hits: u64,
+    embed_cache_misses: u64,
     #[serde(default)]
     by_source: Vec<SourceCount>,
 }
@@ -315,16 +510,32 @@ impl VectorDb {
 
         conn.execute_batch(&format!(
             "CREATE TABLE IF NOT EXISTS chunks (
-                id       INTEGER PRIMARY KEY AUTOINCREMENT,
-                content  TEXT NOT NULL,
-                source   TEXT NOT NULL DEFAULT '',
-                metadata TEXT NOT NULL DEFAULT '',
-                created  TEXT NOT NULL DEFAULT (datetime('now'))
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                content       TEXT NOT NULL,
+                source        TEXT NOT NULL DEFAULT '',
+                metadata      TEXT NOT NULL DEFAULT '',
+                content_hash  BLOB,
+                created       TEXT NOT NULL DEFAULT (datetime('now'))
             );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_chunks_content_hash
+                ON chunks(content_hash) WHERE content_hash IS NOT NULL;
             CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(
                 embedding float[{EMBEDDING_DIM}]
             );"
         ))?;
+
+        // Migration: add content_hash column if upgrading from older schema
+        let has_hash_col: bool = conn
+            .prepare("SELECT content_hash FROM chunks LIMIT 0")
+            .is_ok();
+        if !has_hash_col {
+            info!("migrating: adding content_hash column");
+            conn.execute_batch(
+                "ALTER TABLE chunks ADD COLUMN content_hash BLOB;
+                 CREATE UNIQUE INDEX IF NOT EXISTS idx_chunks_content_hash
+                     ON chunks(content_hash) WHERE content_hash IS NOT NULL;",
+            )?;
+        }
 
         let version: String = conn.query_row("SELECT vec_version()", [], |r| r.get(0))?;
         info!("vector db opened at {path} (sqlite-vec {version})");
@@ -337,16 +548,38 @@ impl VectorDb {
         texts: &[String],
         source: &str,
         metadata: &[String],
-    ) -> Result<Vec<i64>> {
+    ) -> Result<(Vec<i64>, usize)> {
         let mut ids = Vec::with_capacity(embeddings.len());
+        let mut duplicates = 0usize;
 
         for (i, (emb, text)) in embeddings.iter().zip(texts.iter()).enumerate() {
             let meta = metadata.get(i).map(|s| s.as_str()).unwrap_or("");
+            let hash = content_hash(text, source);
 
-            self.conn.execute(
-                "INSERT INTO chunks (content, source, metadata) VALUES (?1, ?2, ?3)",
-                rusqlite::params![text, source, meta],
+            // INSERT OR IGNORE — unique index on content_hash rejects exact duplicates
+            let inserted = self.conn.execute(
+                "INSERT OR IGNORE INTO chunks (content, source, metadata, content_hash) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![text, source, meta, hash],
             )?;
+
+            if inserted == 0 {
+                // Duplicate — return existing ID, optionally update metadata
+                let existing_id: i64 = self.conn.query_row(
+                    "SELECT id FROM chunks WHERE content_hash = ?1",
+                    [&hash],
+                    |r| r.get(0),
+                )?;
+                if !meta.is_empty() {
+                    self.conn.execute(
+                        "UPDATE chunks SET metadata = ?1 WHERE id = ?2",
+                        rusqlite::params![meta, existing_id],
+                    )?;
+                }
+                ids.push(existing_id);
+                duplicates += 1;
+                continue;
+            }
+
             let rowid = self.conn.last_insert_rowid();
 
             let blob = vec_to_blob(emb);
@@ -358,7 +591,7 @@ impl VectorDb {
             ids.push(rowid);
         }
 
-        Ok(ids)
+        Ok((ids, duplicates))
     }
 
     fn search(
@@ -612,7 +845,11 @@ impl VectorDb {
         Ok(StatsResponse {
             total_vectors: total,
             db_size_bytes: db_size,
-            model_loaded: false, // caller fills this in
+            model_loaded: false, // caller fills runtime fields
+            model_circuit: String::new(),
+            embed_cache_entries: 0,
+            embed_cache_hits: 0,
+            embed_cache_misses: 0,
             by_source,
         })
     }
@@ -631,6 +868,8 @@ struct AppState {
     db: VectorDb,
     db_path: String,
     idle_timeout_secs: u64,
+    model_breaker: CircuitBreaker,
+    embed_cache: EmbeddingCache,
 }
 
 #[tokio::main]
@@ -680,6 +919,8 @@ async fn main() -> Result<()> {
         db,
         db_path,
         idle_timeout_secs,
+        model_breaker: CircuitBreaker::new(2, Duration::from_secs(60)),
+        embed_cache: EmbeddingCache::new(),
     }));
 
     let (activity_tx, mut activity_rx) = tokio::sync::mpsc::channel::<()>(16);
@@ -839,11 +1080,27 @@ async fn process_request(
 }
 
 async fn ensure_model(state: &mut AppState) -> Result<()> {
-    if state.model.is_none() {
-        info!("loading model on demand...");
-        state.model = Some(EmbedModel::load(state.dtype, &state.model_id)?);
+    if state.model.is_some() {
+        return Ok(());
     }
-    Ok(())
+    if !state.model_breaker.allow_request() {
+        anyhow::bail!(
+            "model loading suspended (circuit {}, cooldown active)",
+            state.model_breaker.state_name()
+        );
+    }
+    info!("loading model on demand...");
+    match EmbedModel::load(state.dtype, &state.model_id) {
+        Ok(model) => {
+            state.model = Some(model);
+            state.model_breaker.record_success();
+            Ok(())
+        }
+        Err(e) => {
+            state.model_breaker.record_failure();
+            Err(e)
+        }
+    }
 }
 
 async fn handle_embed(
@@ -852,13 +1109,41 @@ async fn handle_embed(
     activity_tx: &tokio::sync::mpsc::Sender<()>,
 ) -> String {
     let mut guard = state.lock().await;
+
+    // Check cache for each text, only embed uncached ones
+    let (mut cached_results, needs_embed) =
+        guard.embed_cache.lookup_batch(&req.texts, &req.prefix);
+
+    if needs_embed.is_empty() {
+        // All cache hits — no model needed
+        let embeddings: Vec<Vec<f32>> = cached_results
+            .into_iter()
+            .map(|o| o.unwrap())
+            .collect();
+        return serde_json::to_string(&EmbedResponse { embeddings }).unwrap();
+    }
+
     if let Err(e) = ensure_model(&mut guard).await {
         return json_error(&format!("model load failed: {e}"));
     }
     let model = guard.model.as_ref().unwrap();
-    match model.embed(&req.texts, &req.prefix) {
-        Ok(embeddings) => {
+
+    let texts_to_embed: Vec<String> = needs_embed.iter().map(|&i| req.texts[i].clone()).collect();
+    match model.embed(&texts_to_embed, &req.prefix) {
+        Ok(new_embeddings) => {
             let _ = activity_tx.send(()).await;
+            // Fill cached_results with freshly computed embeddings and cache them
+            for (embed_idx, &original_idx) in needs_embed.iter().enumerate() {
+                let emb = new_embeddings[embed_idx].clone();
+                guard
+                    .embed_cache
+                    .store(&req.texts[original_idx], &req.prefix, emb.clone());
+                cached_results[original_idx] = Some(emb);
+            }
+            let embeddings: Vec<Vec<f32>> = cached_results
+                .into_iter()
+                .map(|o| o.unwrap())
+                .collect();
             serde_json::to_string(&EmbedResponse { embeddings }).unwrap()
         }
         Err(e) => json_error(&e.to_string()),
@@ -871,24 +1156,51 @@ async fn handle_store(
     activity_tx: &tokio::sync::mpsc::Sender<()>,
 ) -> String {
     let mut guard = state.lock().await;
-    if let Err(e) = ensure_model(&mut guard).await {
-        return json_error(&format!("model load failed: {e}"));
-    }
-    let model = guard.model.as_ref().unwrap();
 
     let prefix = "search_document: ";
-    let embeddings = match model.embed(&req.texts, prefix) {
-        Ok(e) => e,
-        Err(e) => return json_error(&format!("embedding failed: {e}")),
-    };
-    let _ = activity_tx.send(()).await;
 
-    match guard.db.store(&embeddings, &req.texts, &req.source, &req.metadata) {
-        Ok(ids) => serde_json::to_string(&StoreResponse {
-            stored: ids.len(),
-            ids,
-        })
-        .unwrap(),
+    // Use embedding cache for store too
+    let (mut cached_results, needs_embed) =
+        guard.embed_cache.lookup_batch(&req.texts, prefix);
+
+    if !needs_embed.is_empty() {
+        if let Err(e) = ensure_model(&mut guard).await {
+            return json_error(&format!("model load failed: {e}"));
+        }
+        let model = guard.model.as_ref().unwrap();
+
+        let texts_to_embed: Vec<String> =
+            needs_embed.iter().map(|&i| req.texts[i].clone()).collect();
+        match model.embed(&texts_to_embed, prefix) {
+            Ok(new_embeddings) => {
+                let _ = activity_tx.send(()).await;
+                for (embed_idx, &original_idx) in needs_embed.iter().enumerate() {
+                    let emb = new_embeddings[embed_idx].clone();
+                    guard
+                        .embed_cache
+                        .store(&req.texts[original_idx], prefix, emb.clone());
+                    cached_results[original_idx] = Some(emb);
+                }
+            }
+            Err(e) => return json_error(&format!("embedding failed: {e}")),
+        }
+    }
+
+    let embeddings: Vec<Vec<f32>> = cached_results.into_iter().map(|o| o.unwrap()).collect();
+
+    match guard
+        .db
+        .store(&embeddings, &req.texts, &req.source, &req.metadata)
+    {
+        Ok((ids, duplicates)) => {
+            let stored = ids.len() - duplicates;
+            serde_json::to_string(&StoreResponse {
+                stored,
+                duplicates,
+                ids,
+            })
+            .unwrap()
+        }
         Err(e) => json_error(&format!("store failed: {e}")),
     }
 }
@@ -899,23 +1211,36 @@ async fn handle_search(
     activity_tx: &tokio::sync::mpsc::Sender<()>,
 ) -> String {
     let mut guard = state.lock().await;
-    if let Err(e) = ensure_model(&mut guard).await {
-        return json_error(&format!("model load failed: {e}"));
-    }
-    let model = guard.model.as_ref().unwrap();
 
-    let query_emb = match model.embed(&[req.query.clone()], "search_query: ") {
-        Ok(mut e) => {
-            if e.is_empty() {
-                return json_error("empty query");
-            }
-            e.remove(0)
+    let prefix = "search_query: ";
+
+    // Check embedding cache — avoids model load for repeated queries
+    let query_emb = if let Some(cached) = guard.embed_cache.lookup(&req.query, prefix) {
+        cached
+    } else {
+        if let Err(e) = ensure_model(&mut guard).await {
+            return json_error(&format!("model load failed: {e}"));
         }
-        Err(e) => return json_error(&format!("embedding failed: {e}")),
-    };
-    let _ = activity_tx.send(()).await;
+        let model = guard.model.as_ref().unwrap();
 
-    match guard.db.search(&query_emb, req.limit, &req.source, &req.metadata_filter) {
+        match model.embed(&[req.query.clone()], prefix) {
+            Ok(mut e) => {
+                if e.is_empty() {
+                    return json_error("empty query");
+                }
+                let _ = activity_tx.send(()).await;
+                let emb = e.remove(0);
+                guard.embed_cache.store(&req.query, prefix, emb.clone());
+                emb
+            }
+            Err(e) => return json_error(&format!("embedding failed: {e}")),
+        }
+    };
+
+    match guard
+        .db
+        .search(&query_emb, req.limit, &req.source, &req.metadata_filter)
+    {
         Ok(results) => serde_json::to_string(&SearchResponse { results }).unwrap(),
         Err(e) => json_error(&format!("search failed: {e}")),
     }
@@ -928,18 +1253,26 @@ async fn handle_update(
 ) -> String {
     let mut guard = state.lock().await;
 
-    // Re-embed if content changed
+    let prefix = "search_document: ";
+
+    // Re-embed if content changed — check cache first
     let new_embedding = if let Some(ref content) = req.content {
-        if let Err(e) = ensure_model(&mut guard).await {
-            return json_error(&format!("model load failed: {e}"));
-        }
-        let model = guard.model.as_ref().unwrap();
-        match model.embed(&[content.clone()], "search_document: ") {
-            Ok(mut embs) => {
-                let _ = activity_tx.send(()).await;
-                Some(embs.remove(0))
+        if let Some(cached) = guard.embed_cache.lookup(content, prefix) {
+            Some(cached)
+        } else {
+            if let Err(e) = ensure_model(&mut guard).await {
+                return json_error(&format!("model load failed: {e}"));
             }
-            Err(e) => return json_error(&format!("embedding failed: {e}")),
+            let model = guard.model.as_ref().unwrap();
+            match model.embed(&[content.clone()], prefix) {
+                Ok(mut embs) => {
+                    let _ = activity_tx.send(()).await;
+                    let emb = embs.remove(0);
+                    guard.embed_cache.store(content, prefix, emb.clone());
+                    Some(emb)
+                }
+                Err(e) => return json_error(&format!("embedding failed: {e}")),
+            }
         }
     } else {
         None
@@ -982,6 +1315,10 @@ async fn handle_stats(state: &Arc<Mutex<AppState>>) -> String {
     match guard.db.stats(&guard.db_path) {
         Ok(mut stats) => {
             stats.model_loaded = guard.model.is_some();
+            stats.model_circuit = guard.model_breaker.state_name().to_string();
+            stats.embed_cache_entries = guard.embed_cache.entries.len();
+            stats.embed_cache_hits = guard.embed_cache.hits;
+            stats.embed_cache_misses = guard.embed_cache.misses;
             serde_json::to_string(&stats).unwrap()
         }
         Err(e) => json_error(&format!("stats failed: {e}")),
