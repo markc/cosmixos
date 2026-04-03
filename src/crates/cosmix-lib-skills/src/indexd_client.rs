@@ -163,6 +163,12 @@ impl IndexdClient {
         self.request(&req.to_string()).await
     }
 
+    /// Generic raw JSON request — send any valid indexd action and get the response.
+    /// Use this for operations not covered by the typed methods (e.g. doc/journal indexing).
+    pub async fn raw_request(&mut self, req: &serde_json::Value) -> Result<serde_json::Value> {
+        self.request(&req.to_string()).await
+    }
+
     /// Raw embed request (useful for testing).
     pub async fn embed(&mut self, texts: &[String], prefix: &str) -> Result<Vec<Vec<f32>>> {
         let req = serde_json::json!({

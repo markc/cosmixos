@@ -54,6 +54,31 @@ struct LogSearchParams {
     limit: Option<usize>,
 }
 
+// --- Knowledge base tool params ---
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct ContextSearchParams {
+    /// Natural language description of what you need context for
+    query: String,
+    /// Project domain filter (e.g. "cosmix", "ns"). Empty = auto-detect from PWD.
+    /// Set to "all" to search across all domains.
+    #[serde(default)]
+    domain: Option<String>,
+    /// Max results per source type (default 3 each for skills/docs/journals)
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct IndexWorkspaceParams {
+    /// Workspace path to index (e.g. "~/.cosmix", "~/.ns"). Empty = current working directory.
+    #[serde(default)]
+    path: Option<String>,
+    /// Only re-index files matching this glob (e.g. "2026-04-03*"). Empty = all .md files.
+    #[serde(default)]
+    filter: Option<String>,
+}
+
 // --- Skills tool params ---
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -231,6 +256,193 @@ impl CosmixMcp {
             }
             Err(e) => format!("ERROR reading {}: {e}", path.display()),
         }
+    }
+
+    // ---- Knowledge base tools ----
+
+    /// Unified semantic search across skills, docs, and journals.
+    /// Searches the current project domain first, with cross-domain fallback.
+    /// Call this at the START of non-trivial tasks to get relevant context.
+    /// Returns results grouped by source type (skills, docs, journals).
+    #[tool]
+    async fn context_search(&self, Parameters(p): Parameters<ContextSearchParams>) -> String {
+        let mut indexd = match self.indexd().await {
+            Ok(c) => c,
+            Err(e) => return format!("ERROR: {e}"),
+        };
+
+        let limit = p.limit.unwrap_or(3);
+        let search_all = p.domain.as_deref() == Some("all");
+        let domain = if search_all {
+            None
+        } else {
+            p.domain.as_deref().filter(|d| !d.is_empty()).map(|d| d.to_string()).or_else(|| {
+                let d = cosmix_skills::detect_domain_cwd();
+                if d == "general" { None } else { Some(d) }
+            })
+        };
+
+        let mut result = serde_json::json!({
+            "domain": domain.as_deref().unwrap_or("all"),
+            "query": &p.query,
+            "skills": [],
+            "docs": [],
+            "journals": [],
+        });
+
+        // Search skills (domain-filtered)
+        let skill_req = if let Some(ref d) = domain {
+            serde_json::json!({
+                "action": "search", "query": &p.query, "limit": limit,
+                "source": "skill",
+                "metadata_filter": [{"field": "domain", "op": "eq", "value": d}]
+            })
+        } else {
+            serde_json::json!({"action": "search", "query": &p.query, "limit": limit, "source": "skill"})
+        };
+
+        if let Ok(resp) = indexd.raw_request(&skill_req).await {
+            if let Some(hits) = resp.get("results").and_then(|r| r.as_array()) {
+                let skills: Vec<serde_json::Value> = hits.iter().filter_map(|h| {
+                    let meta: serde_json::Value = h.get("metadata")
+                        .and_then(|m| m.as_str())
+                        .and_then(|s| serde_json::from_str(s).ok())?;
+                    let dist = h.get("distance").and_then(|d| d.as_f64()).unwrap_or(1.0);
+                    Some(serde_json::json!({
+                        "id": h.get("id"),
+                        "name": meta.get("name"),
+                        "trigger": meta.get("trigger"),
+                        "approach": meta.get("approach"),
+                        "failure_modes": meta.get("failure_modes"),
+                        "confidence": meta.get("confidence"),
+                        "distance": dist,
+                    }))
+                }).collect();
+                result["skills"] = serde_json::Value::Array(skills);
+            }
+        }
+
+        // Search docs (domain-filtered, then cross-domain if few results)
+        let doc_results = search_source(&mut indexd, &p.query, "doc", domain.as_deref(), limit).await;
+        result["docs"] = serde_json::Value::Array(doc_results);
+
+        // Search journals (domain-filtered, then cross-domain)
+        let journal_results = search_source(&mut indexd, &p.query, "journal", domain.as_deref(), limit).await;
+        result["journals"] = serde_json::Value::Array(journal_results);
+
+        serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".into())
+    }
+
+    /// Index (or re-index) _doc/ and _journal/ markdown files for a workspace.
+    /// Splits files on ## headings, stores each section with domain and source metadata.
+    /// Idempotent — deletes old entries for re-indexed files before storing new ones.
+    #[tool]
+    async fn index_workspace(&self, Parameters(p): Parameters<IndexWorkspaceParams>) -> String {
+        let workspace = p.path
+            .map(|p| p.replace("~", &std::env::var("HOME").unwrap_or_default()))
+            .unwrap_or_else(|| std::env::current_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_default());
+
+        let workspace_path = std::path::Path::new(&workspace);
+        if !workspace_path.exists() {
+            return format!("ERROR: workspace path does not exist: {workspace}");
+        }
+
+        let domain = cosmix_skills::detect_domain(workspace_path);
+
+        let mut indexd = match self.indexd().await {
+            Ok(c) => c,
+            Err(e) => return format!("ERROR: {e}"),
+        };
+
+        let mut total_files = 0u32;
+        let mut total_sections = 0u32;
+        let mut errors = Vec::new();
+
+        // Scan for _doc/ and _journal/ directories anywhere under workspace
+        let scan_dirs: Vec<(std::path::PathBuf, &str)> = find_content_dirs(workspace_path);
+
+        for (dir, source) in &scan_dirs {
+            let pattern = dir.join("*.md");
+            let md_files: Vec<std::path::PathBuf> = glob::glob(&pattern.to_string_lossy())
+                .map(|paths| paths.filter_map(|p| p.ok()).collect())
+                .unwrap_or_default();
+
+            for filepath in &md_files {
+                let filename = filepath.file_name().and_then(|f| f.to_str()).unwrap_or("?");
+
+                // Apply filter if specified
+                if let Some(ref filter) = p.filter {
+                    if !filename.contains(filter.as_str()) {
+                        continue;
+                    }
+                }
+
+                let content = match std::fs::read_to_string(filepath) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        errors.push(format!("{filename}: {e}"));
+                        continue;
+                    }
+                };
+
+                let sections = split_markdown_sections(&content, filename);
+                if sections.is_empty() {
+                    continue;
+                }
+
+                // Delete old entries for this file (idempotent re-index)
+                let path_str = filepath.to_string_lossy().to_string();
+                if let Err(e) = delete_by_path(&mut indexd, &path_str).await {
+                    errors.push(format!("{filename}: delete failed: {e}"));
+                }
+
+                // Extract date from filename (YYYY-MM-DD-title.md convention)
+                let date = filename.get(..10).unwrap_or("");
+
+                // Store one section at a time to avoid long mutex holds
+                for (title, text) in &sections {
+                    let meta = serde_json::json!({
+                        "path": path_str,
+                        "filename": filename,
+                        "section": title,
+                        "domain": &domain,
+                        "type": source,
+                        "date": date,
+                    });
+
+                    let req = serde_json::json!({
+                        "action": "store",
+                        "texts": [text],
+                        "source": source,
+                        "metadata": [meta.to_string()],
+                    });
+
+                    match indexd.raw_request(&req).await {
+                        Ok(_) => total_sections += 1,
+                        Err(e) => errors.push(format!("{filename}/{title}: {e}")),
+                    }
+                }
+
+                total_files += 1;
+            }
+        }
+
+        let mut result = serde_json::json!({
+            "indexed": true,
+            "workspace": workspace,
+            "domain": domain,
+            "files": total_files,
+            "sections": total_sections,
+            "dirs_scanned": scan_dirs.iter().map(|(d, s)| format!("{} ({})", d.display(), s)).collect::<Vec<_>>(),
+        });
+
+        if !errors.is_empty() {
+            result["errors"] = serde_json::Value::Array(
+                errors.iter().map(|e| serde_json::Value::String(e.clone())).collect()
+            );
+        }
+
+        serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".into())
     }
 
     // ---- Skills tools ----
@@ -458,6 +670,191 @@ fn resolve_log_path(name: &str) -> PathBuf {
     dir.join(name)
 }
 
+// ---- Knowledge base helpers ----
+
+/// Search a specific source type with optional domain filter.
+/// Returns formatted result objects with filename, section, snippet, distance.
+async fn search_source(
+    indexd: &mut cosmix_skills::IndexdClient,
+    query: &str,
+    source: &str,
+    domain: Option<&str>,
+    limit: usize,
+) -> Vec<serde_json::Value> {
+    // First try domain-filtered search
+    let mut req = serde_json::json!({
+        "action": "search", "query": query, "limit": limit, "source": source,
+    });
+    if let Some(d) = domain {
+        req["metadata_filter"] = serde_json::json!([
+            {"field": "domain", "op": "eq", "value": d}
+        ]);
+    }
+
+    let mut results = Vec::new();
+    if let Ok(resp) = indexd.raw_request(&req).await {
+        results = format_search_hits(&resp);
+    }
+
+    // If domain-filtered returned fewer than limit, backfill with cross-domain
+    if results.len() < limit && domain.is_some() {
+        let remaining = limit - results.len();
+        let cross_req = serde_json::json!({
+            "action": "search", "query": query, "limit": remaining, "source": source,
+        });
+        if let Ok(resp) = indexd.raw_request(&cross_req).await {
+            let cross_hits = format_search_hits(&resp);
+            // Deduplicate by id
+            let existing_ids: std::collections::HashSet<i64> = results.iter()
+                .filter_map(|r| r.get("id").and_then(|i| i.as_i64()))
+                .collect();
+            for hit in cross_hits {
+                if let Some(id) = hit.get("id").and_then(|i| i.as_i64()) {
+                    if !existing_ids.contains(&id) {
+                        results.push(hit);
+                    }
+                }
+            }
+        }
+    }
+
+    results
+}
+
+fn format_search_hits(resp: &serde_json::Value) -> Vec<serde_json::Value> {
+    resp.get("results")
+        .and_then(|r| r.as_array())
+        .map(|hits| {
+            hits.iter().filter_map(|h| {
+                let meta: serde_json::Value = h.get("metadata")
+                    .and_then(|m| m.as_str())
+                    .and_then(|s| serde_json::from_str(s).ok())?;
+                let dist = h.get("distance").and_then(|d| d.as_f64()).unwrap_or(1.0);
+                let content = h.get("content").and_then(|c| c.as_str()).unwrap_or("");
+                let snippet = if content.len() > 500 {
+                    format!("{}...", &content[..500])
+                } else {
+                    content.to_string()
+                };
+                Some(serde_json::json!({
+                    "id": h.get("id"),
+                    "filename": meta.get("filename"),
+                    "section": meta.get("section"),
+                    "domain": meta.get("domain"),
+                    "date": meta.get("date"),
+                    "distance": dist,
+                    "snippet": snippet,
+                }))
+            }).collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Find _doc/ and _journal/ directories under a workspace root.
+fn find_content_dirs(root: &std::path::Path) -> Vec<(std::path::PathBuf, &'static str)> {
+    let mut dirs = Vec::new();
+
+    // Walk up to 3 levels deep looking for _doc/ and _journal/
+    for entry in walkdir(root, 3) {
+        let name = entry.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if name == "_doc" && entry.is_dir() {
+            dirs.push((entry, "doc"));
+        } else if name == "_journal" && entry.is_dir() {
+            dirs.push((entry, "journal"));
+        }
+    }
+
+    dirs
+}
+
+/// Simple directory walker limited to max_depth levels.
+fn walkdir(root: &std::path::Path, max_depth: usize) -> Vec<std::path::PathBuf> {
+    let mut results = Vec::new();
+    let mut stack = vec![(root.to_path_buf(), 0usize)];
+
+    while let Some((dir, depth)) = stack.pop() {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                results.push(path.clone());
+                if path.is_dir() && depth < max_depth {
+                    stack.push((path, depth + 1));
+                }
+            }
+        }
+    }
+
+    results
+}
+
+/// Split markdown content on ## headings into (title, text) sections.
+fn split_markdown_sections(content: &str, filename: &str) -> Vec<(String, String)> {
+    let mut sections = Vec::new();
+    let mut current_title = filename.strip_suffix(".md").unwrap_or(filename).to_string();
+    let mut current_lines: Vec<&str> = Vec::new();
+
+    for line in content.lines() {
+        if line.starts_with("## ") {
+            if !current_lines.is_empty() {
+                let text = current_lines.join("\n");
+                let text = text.trim();
+                if text.len() > 50 {
+                    sections.push((current_title.clone(), text.to_string()));
+                }
+            }
+            current_title = line[3..].trim().to_string();
+            current_lines = vec![line];
+        } else {
+            current_lines.push(line);
+        }
+    }
+
+    if !current_lines.is_empty() {
+        let text = current_lines.join("\n");
+        let text = text.trim();
+        if text.len() > 50 {
+            sections.push((current_title, text.to_string()));
+        }
+    }
+
+    sections
+}
+
+/// Delete all indexed entries for a specific file path.
+async fn delete_by_path(
+    indexd: &mut cosmix_skills::IndexdClient,
+    path: &str,
+) -> Result<(), String> {
+    // List entries and find those matching this path
+    let list_req = serde_json::json!({
+        "action": "list", "limit": 1000, "offset": 0,
+    });
+
+    let resp = indexd.raw_request(&list_req).await.map_err(|e| e.to_string())?;
+    let mut ids_to_delete = Vec::new();
+
+    if let Some(items) = resp.get("items").and_then(|i| i.as_array()) {
+        for item in items {
+            if let Some(meta_str) = item.get("metadata").and_then(|m| m.as_str()) {
+                if let Ok(meta) = serde_json::from_str::<serde_json::Value>(meta_str) {
+                    if meta.get("path").and_then(|p| p.as_str()) == Some(path) {
+                        if let Some(id) = item.get("id").and_then(|i| i.as_i64()) {
+                            ids_to_delete.push(id);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if !ids_to_delete.is_empty() {
+        let del_req = serde_json::json!({"action": "delete", "ids": ids_to_delete});
+        indexd.raw_request(&del_req).await.map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
 #[tool_handler]
 impl ServerHandler for CosmixMcp {
     fn get_info(&self) -> rmcp::model::ServerInfo {
@@ -465,15 +862,17 @@ impl ServerHandler for CosmixMcp {
             rmcp::model::ServerCapabilities::builder().enable_tools().build(),
         )
         .with_instructions(
-            "Cosmix AppMesh bridge with skill learning loop.\n\n\
+            "Cosmix AppMesh bridge with knowledge base and skill learning loop.\n\n\
              AMP tools: amp_call, amp_list_services, amp_list_peers, hub_ping.\n\
              Log tools: log_tail, log_search.\n\
+             Knowledge tools: context_search, index_workspace.\n\
              Skill tools: skills_retrieve, skills_store, skills_refine, skills_list, skills_delete.\n\n\
-             SKILL LEARNING PROTOCOL:\n\
-             1. At the START of non-trivial tasks, call skills_retrieve with a task description.\n\
-             2. Apply any matching skills to guide your approach.\n\
+             KNOWLEDGE PROTOCOL:\n\
+             1. At the START of non-trivial tasks, call context_search with a task description.\n\
+             2. Review returned skills, docs, and journals for relevant context.\n\
              3. After SUCCESSFULLY completing a non-trivial task, call skills_store to capture what you learned.\n\
-             4. If you used a retrieved skill, call skills_refine to report whether it helped."
+             4. If you used a retrieved skill, call skills_refine to report whether it helped.\n\
+             5. Use index_workspace to index/re-index a workspace's _doc/ and _journal/ files."
         )
     }
 }
