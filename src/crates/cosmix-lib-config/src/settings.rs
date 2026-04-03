@@ -21,6 +21,7 @@ pub struct CosmixSettings {
     pub wg: WgSettings,
     pub backup: BackupSettings,
     pub embed: EmbedSettings,
+    pub skills: SkillsSettings,
     pub mesh: MeshSettings,
     pub launcher: LauncherSettings,
 }
@@ -244,13 +245,50 @@ impl Default for BackupSettings {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EmbedSettings {
+    /// Path to the sqlite-vec database file.
     pub vectors_db: String,
+    /// HuggingFace model ID for embeddings.
+    pub model_id: String,
+    /// Unix socket path for the indexd daemon.
+    pub socket_path: String,
+    /// Seconds before unloading the model from memory when idle.
+    pub idle_timeout_secs: u64,
+    /// Model precision: "f16" or "f32".
+    pub dtype: String,
 }
 
 impl Default for EmbedSettings {
     fn default() -> Self {
         Self {
             vectors_db: "/var/lib/cosmix/vectors.db".into(),
+            model_id: "nomic-ai/nomic-embed-text-v1.5".into(),
+            socket_path: "/run/cosmix/embed.sock".into(),
+            idle_timeout_secs: 60,
+            dtype: "f16".into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SkillsSettings {
+    /// Ollama API base URL.
+    pub llm_url: String,
+    /// LLM model name for skill evaluation/extraction.
+    pub llm_model: String,
+    /// Minimum confidence threshold for skill retrieval (0.0–1.0).
+    pub min_confidence: f64,
+    /// Maximum skills injected into agent prompts.
+    pub max_skills: u32,
+}
+
+impl Default for SkillsSettings {
+    fn default() -> Self {
+        Self {
+            llm_url: "http://localhost:11434".into(),
+            llm_model: "qwen3:30b-a3b-nt".into(),
+            min_confidence: 0.3,
+            max_skills: 3,
         }
     }
 }
@@ -279,7 +317,7 @@ pub struct LauncherSettings {
 impl Default for LauncherSettings {
     fn default() -> Self {
         Self {
-            scripts_dir: "~/.local/scripts".into(),
+            scripts_dir: "~/.mix/src/scripts:~/.local/share/mix/scripts".into(),
             editor: "cosmix-edit".into(),
         }
     }

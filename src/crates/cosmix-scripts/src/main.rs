@@ -1,7 +1,7 @@
 //! cosmix-scripts — Script manager for Cosmix.
 //!
-//! Discovers scripts from ~/.local/scripts/ (*.mix, *.sh).
-//! Runs .mix files with the embedded mix-core evaluator (AMP-enabled).
+//! Discovers scripts from the configured scripts_dir paths (*.mx, *.sh).
+//! Runs .mx files with the embedded mix-core evaluator (AMP-enabled).
 //! Runs .sh files with bash.
 
 use std::collections::HashMap;
@@ -48,10 +48,21 @@ enum Cmd {
     OpenFolder,
 }
 
-fn scripts_dir() -> PathBuf {
-    dirs_next::home_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join(".local/scripts")
+/// Resolve the scripts search path from config, expanding ~ to $HOME.
+fn scripts_dirs() -> Vec<PathBuf> {
+    let cfg = cosmix_config::store::load().unwrap_or_default();
+    let home = dirs_next::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+    cfg.launcher
+        .scripts_dir
+        .split(':')
+        .map(|p| {
+            if let Some(rest) = p.strip_prefix("~/") {
+                home.join(rest)
+            } else {
+                PathBuf::from(p)
+            }
+        })
+        .collect()
 }
 
 struct ScriptEntry {
@@ -61,29 +72,35 @@ struct ScriptEntry {
 }
 
 fn discover_scripts() -> Vec<ScriptEntry> {
-    let dir = scripts_dir();
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return Vec::new();
-    };
+    let mut seen = std::collections::HashSet::new();
+    let mut scripts = Vec::new();
 
-    let mut scripts: Vec<ScriptEntry> = entries
-        .flatten()
-        .filter_map(|e| {
+    for dir in scripts_dirs() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in entries.flatten() {
             let path = e.path();
-            let ext = path.extension()?.to_str()?;
+            let ext = match path.extension().and_then(|e| e.to_str()) {
+                Some(e) => e,
+                None => continue,
+            };
             let lang = match ext {
-                "mix" => "mix",
+                "mx" => "mix",
                 "sh" => "bash",
-                _ => return None,
+                _ => continue,
             };
             let name = path
                 .file_stem()
                 .unwrap_or_default()
                 .to_string_lossy()
                 .to_string();
-            Some(ScriptEntry { name, path, lang })
-        })
-        .collect();
+            // First dir wins on name collision (bundled < user)
+            if seen.insert(name.clone()) {
+                scripts.push(ScriptEntry { name, path, lang });
+            }
+        }
+    }
 
     scripts.sort_by(|a, b| a.name.cmp(&b.name));
     scripts
@@ -243,12 +260,18 @@ fn delete_script(path: &Path) {
 }
 
 fn new_script(name: Option<&str>, lang: &str) {
-    let dir = scripts_dir();
+    // New scripts go to the last dir in the search path (user scripts)
+    let dirs = scripts_dirs();
+    let dir = dirs.last().cloned().unwrap_or_else(|| {
+        dirs_next::home_dir()
+            .unwrap_or_else(|| PathBuf::from("/tmp"))
+            .join(".local/share/mix/scripts")
+    });
     let _ = std::fs::create_dir_all(&dir);
 
     let ext = match lang {
         "bash" | "sh" => "sh",
-        _ => "mix",
+        _ => "mx",
     };
 
     let path = if let Some(name) = name {
@@ -275,7 +298,7 @@ fn new_script(name: Option<&str>, lang: &str) {
 
     let template = match ext {
         "sh" => "#!/usr/bin/env bash\n# New cosmix script\nset -euo pipefail\n\necho \"hello from cosmix\"\n",
-        _ => "-- @script New Script\n-- @description A new Mix script\n\nprint \"hello from cosmix\"\n",
+        _ => "#!/usr/bin/env mix\n-- @script New Script\n-- @description A new Mix script\n\nprint \"hello from cosmix\"\n",
     };
 
     let _ = std::fs::write(&path, template);
@@ -291,7 +314,8 @@ async fn main() {
         None | Some(Cmd::List) => {
             let scripts = discover_scripts();
             if scripts.is_empty() {
-                println!("No scripts found in {}", scripts_dir().display());
+                let dirs: Vec<_> = scripts_dirs().iter().map(|d| d.display().to_string()).collect();
+                println!("No scripts found in {}", dirs.join(":"));
                 return;
             }
             for s in &scripts {
@@ -326,7 +350,8 @@ async fn main() {
             new_script(name.as_deref(), &lang);
         }
         Some(Cmd::OpenFolder) => {
-            let dir = scripts_dir();
+            let dirs = scripts_dirs();
+            let dir = dirs.last().cloned().unwrap_or_else(|| PathBuf::from("."));
             let _ = std::fs::create_dir_all(&dir);
             let _ = Command::new("xdg-open").arg(&dir).spawn();
         }

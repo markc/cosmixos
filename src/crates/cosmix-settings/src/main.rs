@@ -31,6 +31,7 @@ const SECTIONS: &[(&str, &str)] = &[
     ("wg", "WireGuard"),
     ("backup", "Backup"),
     ("embed", "Embeddings"),
+    ("skills", "Skills"),
     ("mesh", "Mesh"),
     ("launcher", "Launcher"),
 ];

@@ -17,12 +17,7 @@ use tokio::net::UnixListener;
 use tokio::sync::Mutex;
 use tracing::{error, info};
 
-const MODEL_ID: &str = "nomic-ai/nomic-embed-text-v1.5";
 const EMBEDDING_DIM: usize = 768;
-const SOCKET_DIR: &str = "/run/cosmix";
-const SOCKET_PATH: &str = "/run/cosmix/embed.sock";
-const MODEL_IDLE_SECS: u64 = 60;
-const DEFAULT_DB_PATH: &str = "/var/lib/cosmix/vectors.db";
 
 // --- Request/Response types ---
 
@@ -33,7 +28,9 @@ enum Request {
     Embed(EmbedRequest),
     Store(StoreRequest),
     Search(SearchRequest),
+    Update(UpdateRequest),
     Delete(DeleteRequest),
+    List(ListRequest),
     Stats,
 }
 
@@ -60,11 +57,52 @@ struct SearchRequest {
     limit: usize,
     #[serde(default)]
     source: String,
+    #[serde(default)]
+    metadata_filter: Vec<MetadataFilter>,
+}
+
+#[derive(Deserialize)]
+struct MetadataFilter {
+    field: String,
+    op: FilterOp,
+    value: serde_json::Value,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum FilterOp {
+    Eq,
+    Gt,
+    Lt,
+    Gte,
+    Lte,
+    Contains,
+}
+
+#[derive(Deserialize)]
+struct UpdateRequest {
+    id: i64,
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    metadata: Option<String>,
+    #[serde(default)]
+    source: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct DeleteRequest {
     ids: Vec<i64>,
+}
+
+#[derive(Deserialize)]
+struct ListRequest {
+    #[serde(default)]
+    source: String,
+    #[serde(default = "default_limit")]
+    limit: usize,
+    #[serde(default)]
+    offset: usize,
 }
 
 fn default_doc_prefix() -> String {
@@ -101,8 +139,29 @@ struct SearchResponse {
 }
 
 #[derive(Serialize)]
+struct UpdateResponse {
+    updated: bool,
+    re_embedded: bool,
+}
+
+#[derive(Serialize)]
 struct DeleteResponse {
     deleted: usize,
+}
+
+#[derive(Serialize)]
+struct ListItem {
+    id: i64,
+    content: String,
+    source: String,
+    metadata: String,
+    created: String,
+}
+
+#[derive(Serialize)]
+struct ListResponse {
+    items: Vec<ListItem>,
+    total: usize,
 }
 
 #[derive(Serialize)]
@@ -126,12 +185,12 @@ struct EmbedModel {
 }
 
 impl EmbedModel {
-    fn load(dtype: DType) -> Result<Self> {
+    fn load(dtype: DType, model_id: &str) -> Result<Self> {
         let device = Device::Cpu;
 
-        info!("downloading model files from {MODEL_ID}...");
+        info!("downloading model files from {model_id}...");
         let api = Api::new()?;
-        let repo = api.repo(Repo::new(MODEL_ID.into(), RepoType::Model));
+        let repo = api.repo(Repo::new(model_id.into(), RepoType::Model));
 
         let config_path = repo.get("config.json").context("downloading config.json")?;
         let tokenizer_path = repo
@@ -299,59 +358,215 @@ impl VectorDb {
         query_embedding: &[f32],
         limit: usize,
         source_filter: &str,
+        metadata_filters: &[MetadataFilter],
     ) -> Result<Vec<SearchResult>> {
         let blob = vec_to_blob(query_embedding);
-        let mut results = Vec::new();
 
-        if source_filter.is_empty() {
-            let mut stmt = self.conn.prepare(
-                "SELECT v.rowid, v.distance, c.content, c.source, c.metadata
-                 FROM vec_chunks v
-                 JOIN chunks c ON c.id = v.rowid
-                 WHERE v.embedding MATCH ?1
-                 AND k = ?2
-                 ORDER BY v.distance",
-            )?;
-            let rows = stmt.query_map(rusqlite::params![blob, limit as i64], |row| {
-                Ok(SearchResult {
-                    id: row.get(0)?,
-                    distance: row.get(1)?,
-                    content: row.get(2)?,
-                    source: row.get(3)?,
-                    metadata: row.get(4)?,
-                })
-            })?;
-            for row in rows {
-                results.push(row?);
+        // Build the base query — sqlite-vec requires MATCH + k in the WHERE clause
+        let mut sql = String::from(
+            "SELECT v.rowid, v.distance, c.content, c.source, c.metadata
+             FROM vec_chunks v
+             JOIN chunks c ON c.id = v.rowid
+             WHERE v.embedding MATCH ?1
+             AND k = ?2",
+        );
+
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![
+            Box::new(blob),
+            Box::new(limit as i64),
+        ];
+        let mut param_idx = 3;
+
+        if !source_filter.is_empty() {
+            sql.push_str(&format!(" AND c.source = ?{param_idx}"));
+            params.push(Box::new(source_filter.to_string()));
+            param_idx += 1;
+        }
+
+        for filter in metadata_filters {
+            let json_path = format!("$.{}", filter.field);
+            let op_str = match filter.op {
+                FilterOp::Eq => "=",
+                FilterOp::Gt => ">",
+                FilterOp::Lt => "<",
+                FilterOp::Gte => ">=",
+                FilterOp::Lte => "<=",
+                FilterOp::Contains => "LIKE",
+            };
+
+            if matches!(filter.op, FilterOp::Contains) {
+                let pattern = format!("%{}%", filter.value.as_str().unwrap_or(""));
+                sql.push_str(&format!(
+                    " AND json_extract(c.metadata, ?{}) {} ?{}",
+                    param_idx,
+                    op_str,
+                    param_idx + 1
+                ));
+                params.push(Box::new(json_path));
+                params.push(Box::new(pattern));
+            } else {
+                sql.push_str(&format!(
+                    " AND json_extract(c.metadata, ?{}) {} ?{}",
+                    param_idx,
+                    op_str,
+                    param_idx + 1
+                ));
+                params.push(Box::new(json_path));
+                match &filter.value {
+                    serde_json::Value::Number(n) => {
+                        if let Some(f) = n.as_f64() {
+                            params.push(Box::new(f));
+                        } else {
+                            params.push(Box::new(n.as_i64().unwrap_or(0)));
+                        }
+                    }
+                    serde_json::Value::String(s) => params.push(Box::new(s.clone())),
+                    other => params.push(Box::new(other.to_string())),
+                }
             }
-        } else {
-            let mut stmt = self.conn.prepare(
-                "SELECT v.rowid, v.distance, c.content, c.source, c.metadata
-                 FROM vec_chunks v
-                 JOIN chunks c ON c.id = v.rowid
-                 WHERE v.embedding MATCH ?1
-                 AND k = ?2
-                 AND c.source = ?3
-                 ORDER BY v.distance",
+            param_idx += 2;
+        }
+
+        sql.push_str(" ORDER BY v.distance");
+
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(&*param_refs, |row| {
+            Ok(SearchResult {
+                id: row.get(0)?,
+                distance: row.get(1)?,
+                content: row.get(2)?,
+                source: row.get(3)?,
+                metadata: row.get(4)?,
+            })
+        })?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
+    }
+
+    fn update(
+        &self,
+        id: i64,
+        content: Option<&str>,
+        metadata: Option<&str>,
+        source: Option<&str>,
+        new_embedding: Option<&[f32]>,
+    ) -> Result<bool> {
+        let mut set_clauses = Vec::new();
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        let mut idx = 1;
+
+        if let Some(c) = content {
+            set_clauses.push(format!("content = ?{idx}"));
+            params.push(Box::new(c.to_string()));
+            idx += 1;
+        }
+        if let Some(m) = metadata {
+            set_clauses.push(format!("metadata = ?{idx}"));
+            params.push(Box::new(m.to_string()));
+            idx += 1;
+        }
+        if let Some(s) = source {
+            set_clauses.push(format!("source = ?{idx}"));
+            params.push(Box::new(s.to_string()));
+            idx += 1;
+        }
+
+        if set_clauses.is_empty() && new_embedding.is_none() {
+            return Ok(false);
+        }
+
+        if !set_clauses.is_empty() {
+            let sql = format!(
+                "UPDATE chunks SET {} WHERE id = ?{}",
+                set_clauses.join(", "),
+                idx
+            );
+            params.push(Box::new(id));
+            let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+                params.iter().map(|p| p.as_ref()).collect();
+            self.conn.execute(&sql, &*param_refs)?;
+        }
+
+        if let Some(emb) = new_embedding {
+            let blob = vec_to_blob(emb);
+            // sqlite-vec: delete old + insert new for the same rowid
+            self.conn
+                .execute("DELETE FROM vec_chunks WHERE rowid = ?1", [id])?;
+            self.conn.execute(
+                "INSERT INTO vec_chunks (rowid, embedding) VALUES (?1, ?2)",
+                rusqlite::params![id, blob],
             )?;
+        }
+
+        Ok(true)
+    }
+
+    fn list(&self, source_filter: &str, limit: usize, offset: usize) -> Result<(Vec<ListItem>, usize)> {
+        let has_filter = !source_filter.is_empty();
+
+        let total: usize = if has_filter {
+            self.conn.query_row(
+                "SELECT COUNT(*) FROM chunks WHERE source = ?1",
+                [source_filter],
+                |r| r.get::<_, i64>(0).map(|v| v as usize),
+            )?
+        } else {
+            self.conn.query_row(
+                "SELECT COUNT(*) FROM chunks",
+                [],
+                |r| r.get::<_, i64>(0).map(|v| v as usize),
+            )?
+        };
+
+        let sql = if has_filter {
+            "SELECT id, content, source, metadata, created FROM chunks WHERE source = ?1 ORDER BY created DESC LIMIT ?2 OFFSET ?3"
+        } else {
+            "SELECT id, content, source, metadata, created FROM chunks WHERE 1=1 ORDER BY created DESC LIMIT ?1 OFFSET ?2"
+        };
+
+        let mut stmt = self.conn.prepare(sql)?;
+        let mut items = Vec::new();
+
+        if has_filter {
             let rows = stmt.query_map(
-                rusqlite::params![blob, limit as i64, source_filter],
+                rusqlite::params![source_filter, limit as i64, offset as i64],
                 |row| {
-                    Ok(SearchResult {
+                    Ok(ListItem {
                         id: row.get(0)?,
-                        distance: row.get(1)?,
-                        content: row.get(2)?,
-                        source: row.get(3)?,
-                        metadata: row.get(4)?,
+                        content: row.get(1)?,
+                        source: row.get(2)?,
+                        metadata: row.get(3)?,
+                        created: row.get(4)?,
                     })
                 },
             )?;
             for row in rows {
-                results.push(row?);
+                items.push(row?);
+            }
+        } else {
+            let rows = stmt.query_map(
+                rusqlite::params![limit as i64, offset as i64],
+                |row| {
+                    Ok(ListItem {
+                        id: row.get(0)?,
+                        content: row.get(1)?,
+                        source: row.get(2)?,
+                        metadata: row.get(3)?,
+                        created: row.get(4)?,
+                    })
+                },
+            )?;
+            for row in rows {
+                items.push(row?);
             }
         }
 
-        Ok(results)
+        Ok((items, total))
     }
 
     fn delete(&self, ids: &[i64]) -> Result<usize> {
@@ -388,50 +603,64 @@ fn vec_to_blob(v: &[f32]) -> Vec<u8> {
 struct AppState {
     model: Option<EmbedModel>,
     dtype: DType,
+    model_id: String,
     db: VectorDb,
     db_path: String,
+    idle_timeout_secs: u64,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let _log = cosmix_daemon::init_tracing("cosmix_indexd");
 
-    let listener = if let Ok(listener) = try_systemd_socket() {
-        info!("using systemd socket activation");
-        listener
-    } else {
-        std::fs::create_dir_all(SOCKET_DIR)
-            .with_context(|| format!("creating {SOCKET_DIR}"))?;
-        let _ = std::fs::remove_file(SOCKET_PATH);
-        let listener = UnixListener::bind(SOCKET_PATH)
-            .with_context(|| format!("binding {SOCKET_PATH}"))?;
-        std::fs::set_permissions(
-            SOCKET_PATH,
-            std::os::unix::fs::PermissionsExt::from_mode(0o666),
-        )?;
-        info!("listening on {SOCKET_PATH}");
-        listener
-    };
+    let cfg = cosmix_config::store::load().unwrap_or_default().embed;
 
-    let dtype = if std::env::args().any(|a| a == "--f32") {
+    // CLI --f32 flag overrides config; env var COSMIX_VECTORS_DB overrides config db path
+    let dtype = if std::env::args().any(|a| a == "--f32") || cfg.dtype == "f32" {
         DType::F32
     } else {
         DType::F16
     };
+    let db_path = std::env::var("COSMIX_VECTORS_DB").unwrap_or(cfg.vectors_db);
+    let socket_path = cfg.socket_path;
+    let model_id = cfg.model_id;
+    let idle_timeout_secs = cfg.idle_timeout_secs;
 
-    let db_path = std::env::var("COSMIX_VECTORS_DB").unwrap_or_else(|_| DEFAULT_DB_PATH.into());
+    let listener = if let Ok(listener) = try_systemd_socket() {
+        info!("using systemd socket activation");
+        listener
+    } else {
+        let socket_dir = std::path::Path::new(&socket_path)
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| "/run/cosmix".into());
+        std::fs::create_dir_all(&socket_dir)
+            .with_context(|| format!("creating {socket_dir}"))?;
+        let _ = std::fs::remove_file(&socket_path);
+        let listener = UnixListener::bind(&socket_path)
+            .with_context(|| format!("binding {socket_path}"))?;
+        std::fs::set_permissions(
+            &socket_path,
+            std::os::unix::fs::PermissionsExt::from_mode(0o666),
+        )?;
+        info!("listening on {socket_path}");
+        listener
+    };
+
     let db = VectorDb::open(&db_path)?;
 
     let state = Arc::new(Mutex::new(AppState {
         model: None,
         dtype,
+        model_id,
         db,
         db_path,
+        idle_timeout_secs,
     }));
 
     let (activity_tx, mut activity_rx) = tokio::sync::mpsc::channel::<()>(16);
 
-    info!("ready — model loads on first request, unloads after {MODEL_IDLE_SECS}s idle");
+    info!("ready — model loads on first request, unloads after {idle_timeout_secs}s idle");
 
     // Spawn idle watchdog
     let watchdog_state = state.clone();
@@ -442,7 +671,8 @@ async fn main() -> Result<()> {
             }
             while activity_rx.try_recv().is_ok() {}
 
-            let mut idle_remaining = MODEL_IDLE_SECS;
+            let timeout = watchdog_state.lock().await.idle_timeout_secs;
+            let mut idle_remaining = timeout;
             loop {
                 tokio::select! {
                     _ = tokio::time::sleep(Duration::from_secs(1)) => {
@@ -450,7 +680,7 @@ async fn main() -> Result<()> {
                         if idle_remaining == 0 {
                             let mut guard = watchdog_state.lock().await;
                             if guard.model.is_some() {
-                                info!("model idle for {MODEL_IDLE_SECS}s, unloading to free memory");
+                                info!("model idle for {timeout}s, unloading to free memory");
                                 guard.model = None;
                                 drop(guard);
                                 unsafe { libc::malloc_trim(0); }
@@ -463,7 +693,7 @@ async fn main() -> Result<()> {
                             return;
                         }
                         while activity_rx.try_recv().is_ok() {}
-                        idle_remaining = MODEL_IDLE_SECS;
+                        idle_remaining = timeout;
                     }
                 }
             }
@@ -523,7 +753,9 @@ async fn process_request(
         Request::Embed(req) => handle_embed(req, state, activity_tx).await,
         Request::Store(req) => handle_store(req, state, activity_tx).await,
         Request::Search(req) => handle_search(req, state, activity_tx).await,
+        Request::Update(req) => handle_update(req, state, activity_tx).await,
         Request::Delete(req) => handle_delete(req, state).await,
+        Request::List(req) => handle_list(req, state).await,
         Request::Stats => handle_stats(state).await,
     }
 }
@@ -531,7 +763,7 @@ async fn process_request(
 async fn ensure_model(state: &mut AppState) -> Result<()> {
     if state.model.is_none() {
         info!("loading model on demand...");
-        state.model = Some(EmbedModel::load(state.dtype)?);
+        state.model = Some(EmbedModel::load(state.dtype, &state.model_id)?);
     }
     Ok(())
 }
@@ -605,9 +837,49 @@ async fn handle_search(
     };
     let _ = activity_tx.send(()).await;
 
-    match guard.db.search(&query_emb, req.limit, &req.source) {
+    match guard.db.search(&query_emb, req.limit, &req.source, &req.metadata_filter) {
         Ok(results) => serde_json::to_string(&SearchResponse { results }).unwrap(),
         Err(e) => json_error(&format!("search failed: {e}")),
+    }
+}
+
+async fn handle_update(
+    req: UpdateRequest,
+    state: &Arc<Mutex<AppState>>,
+    activity_tx: &tokio::sync::mpsc::Sender<()>,
+) -> String {
+    let mut guard = state.lock().await;
+
+    // Re-embed if content changed
+    let new_embedding = if let Some(ref content) = req.content {
+        if let Err(e) = ensure_model(&mut guard).await {
+            return json_error(&format!("model load failed: {e}"));
+        }
+        let model = guard.model.as_ref().unwrap();
+        match model.embed(&[content.clone()], "search_document: ") {
+            Ok(mut embs) => {
+                let _ = activity_tx.send(()).await;
+                Some(embs.remove(0))
+            }
+            Err(e) => return json_error(&format!("embedding failed: {e}")),
+        }
+    } else {
+        None
+    };
+
+    match guard.db.update(
+        req.id,
+        req.content.as_deref(),
+        req.metadata.as_deref(),
+        req.source.as_deref(),
+        new_embedding.as_deref(),
+    ) {
+        Ok(updated) => serde_json::to_string(&UpdateResponse {
+            updated,
+            re_embedded: new_embedding.is_some(),
+        })
+        .unwrap(),
+        Err(e) => json_error(&format!("update failed: {e}")),
     }
 }
 
@@ -616,6 +888,14 @@ async fn handle_delete(req: DeleteRequest, state: &Arc<Mutex<AppState>>) -> Stri
     match guard.db.delete(&req.ids) {
         Ok(deleted) => serde_json::to_string(&DeleteResponse { deleted }).unwrap(),
         Err(e) => json_error(&format!("delete failed: {e}")),
+    }
+}
+
+async fn handle_list(req: ListRequest, state: &Arc<Mutex<AppState>>) -> String {
+    let guard = state.lock().await;
+    match guard.db.list(&req.source, req.limit, req.offset) {
+        Ok((items, total)) => serde_json::to_string(&ListResponse { items, total }).unwrap(),
+        Err(e) => json_error(&format!("list failed: {e}")),
     }
 }
 
