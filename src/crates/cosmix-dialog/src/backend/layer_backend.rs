@@ -19,11 +19,11 @@ pub fn is_available() -> bool {
 }
 
 /// Apply the dialog theme CSS. Idempotent — safe to call multiple times.
-pub fn init_theme() {
+pub fn init_theme(dark: bool) {
     use std::sync::Once;
     static THEME_INIT: Once = Once::new();
     THEME_INIT.call_once(|| {
-        theme::apply_theme();
+        theme::apply_theme(dark);
     });
 }
 
@@ -33,7 +33,8 @@ pub fn init_theme() {
 pub fn run(request: DialogRequest) -> DialogResult {
     // GTK init is idempotent — safe to call multiple times on the same thread
     let _ = gtk::init();
-    init_theme();
+    let dark = request.theme_dark.unwrap_or(true);
+    init_theme(dark);
 
     let (w, h) = request.default_size();
     let state = DialogState::new();

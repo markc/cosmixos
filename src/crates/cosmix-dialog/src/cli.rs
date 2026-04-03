@@ -37,6 +37,14 @@ pub struct Cli {
     /// Rendering backend: auto (default), dioxus (WebKitGTK), or layer (GTK layer-shell).
     #[arg(long, global = true, value_enum)]
     pub backend: Option<BackendOverride>,
+
+    /// Force dark theme.
+    #[arg(long, global = true, conflicts_with = "light")]
+    pub dark: bool,
+
+    /// Force light theme.
+    #[arg(long, global = true, conflicts_with = "dark")]
+    pub light: bool,
 }
 
 #[derive(Subcommand)]
@@ -212,12 +220,19 @@ impl Cli {
             _ => None,
         };
 
+        let theme_dark = match (self.dark, self.light) {
+            (true, _) => Some(true),
+            (_, true) => Some(false),
+            _ => None,
+        };
+
         DialogRequest {
             kind,
             title: self.title,
             size,
             timeout: self.timeout,
             json_output: self.json,
+            theme_dark,
         }
     }
 }

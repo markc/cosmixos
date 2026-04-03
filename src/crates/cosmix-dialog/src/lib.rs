@@ -41,6 +41,9 @@ pub struct DialogRequest {
     /// Whether to output JSON instead of plain text.
     #[serde(default)]
     pub json_output: bool,
+    /// Theme override: Some(true) = dark, Some(false) = light, None = use config/default.
+    #[serde(default)]
+    pub theme_dark: Option<bool>,
 }
 
 impl DialogRequest {

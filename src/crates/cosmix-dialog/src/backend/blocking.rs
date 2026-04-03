@@ -28,7 +28,7 @@ fn gtk_sender() -> &'static Mutex<mpsc::Sender<DialogJob>> {
                 #[cfg(feature = "layer-shell")]
                 {
                     let _ = gtk::init();
-                    super::layer_backend::init_theme();
+                    super::layer_backend::init_theme(true);
                 }
 
                 // Process dialog requests serially

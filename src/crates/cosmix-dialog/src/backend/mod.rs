@@ -8,7 +8,7 @@ pub mod layer_backend;
 
 pub mod blocking;
 
-use crate::DialogRequest;
+use crate::{DialogKind, DialogRequest};
 
 /// Which rendering backend to use.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -49,8 +49,22 @@ pub fn select_backend(request: &DialogRequest, override_: Option<BackendOverride
         let (_, h) = request.default_size();
         let on_wayland = std::env::var("WAYLAND_DISPLAY").is_ok();
 
-        if on_wayland && h < 240 && layer_backend::is_available() {
-            return BackendKind::LayerShell;
+        let layer_supported = matches!(
+            request.kind,
+            DialogKind::Message { .. }
+                | DialogKind::Question { .. }
+                | DialogKind::Entry { .. }
+                | DialogKind::Password { .. }
+                | DialogKind::ComboBox { .. }
+                | DialogKind::Progress { .. }
+        );
+
+        if on_wayland && h < 240 && layer_supported {
+            // gtk_layer_is_supported() requires GTK to be initialized first
+            let _ = gtk::init();
+            if layer_backend::is_available() {
+                return BackendKind::LayerShell;
+            }
         }
     }
 
