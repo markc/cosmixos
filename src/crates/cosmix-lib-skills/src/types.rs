@@ -22,6 +22,9 @@ pub struct SkillDocument {
     pub last_used: Option<String>,
     pub created: String,
     pub updated: String,
+    /// Whether this skill has been graduated to CLAUDE.md as a permanent rule.
+    #[serde(default)]
+    pub graduated: bool,
 }
 
 impl SkillDocument {

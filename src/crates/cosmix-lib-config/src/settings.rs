@@ -346,6 +346,12 @@ pub struct SkillsSettings {
     pub max_skills: u32,
     /// LLM backend name to use (key in [llm.backends], empty = use [llm].default).
     pub llm_backend: String,
+    /// Minimum confidence for skill graduation to CLAUDE.md (0.0–1.0).
+    pub graduation_confidence: f64,
+    /// Minimum use count for skill graduation.
+    pub graduation_min_uses: u32,
+    /// Minimum success count for skill graduation.
+    pub graduation_min_successes: u32,
 }
 
 impl Default for SkillsSettings {
@@ -354,6 +360,9 @@ impl Default for SkillsSettings {
             min_confidence: 0.3,
             max_skills: 3,
             llm_backend: String::new(),
+            graduation_confidence: 0.9,
+            graduation_min_uses: 5,
+            graduation_min_successes: 4,
         }
     }
 }

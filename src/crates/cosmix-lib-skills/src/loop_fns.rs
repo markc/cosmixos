@@ -96,6 +96,7 @@ pub async fn extract_skill(
         last_used: Some(now.clone()),
         created: now.clone(),
         updated: now,
+        graduated: false,
     };
 
     info!(name = %skill.name, "skill extracted");
@@ -205,6 +206,7 @@ pub async fn refine_skill(
         last_used: Some(now.clone()),
         created: existing.created.clone(),
         updated: now,
+        graduated: existing.graduated,
     };
 
     indexd.update_skill(skill_id, &updated).await?;
@@ -217,6 +219,111 @@ pub async fn refine_skill(
     );
 
     Ok(updated)
+}
+
+/// Check if a skill qualifies for graduation to CLAUDE.md.
+/// Returns Ok(true) if the skill was graduated, Ok(false) if not eligible.
+pub async fn check_graduation(
+    indexd: &mut IndexdClient,
+    skill_id: i64,
+    skill: &SkillDocument,
+) -> Result<bool> {
+    if skill.graduated {
+        return Ok(false);
+    }
+
+    let config = cosmix_config::store::load().unwrap_or_default();
+    let threshold_conf = config.skills.graduation_confidence as f32;
+    let threshold_uses = config.skills.graduation_min_uses;
+    let threshold_successes = config.skills.graduation_min_successes;
+
+    if skill.confidence < threshold_conf
+        || skill.use_count < threshold_uses
+        || skill.success_count < threshold_successes
+    {
+        return Ok(false);
+    }
+
+    // Find CLAUDE.md for the skill's domain
+    let claude_md_path = find_claude_md_for_domain(&skill.domain)?;
+
+    // Format the skill as a CLAUDE.md rule
+    let rule = format_graduation_rule(skill);
+
+    // Read current CLAUDE.md and append to Graduated Skills section
+    let content = std::fs::read_to_string(&claude_md_path)
+        .with_context(|| format!("reading {}", claude_md_path.display()))?;
+
+    let section_marker = "## Graduated Skills (auto-generated)";
+    let updated = if content.contains(section_marker) {
+        // Append under existing section
+        content.replacen(section_marker, &format!("{section_marker}\n\n{rule}"), 1)
+    } else {
+        // Create section at end of file
+        format!("{content}\n\n{section_marker}\n\n{rule}")
+    };
+
+    std::fs::write(&claude_md_path, updated)
+        .with_context(|| format!("writing {}", claude_md_path.display()))?;
+
+    // Mark skill as graduated in indexd
+    let mut graduated_skill = skill.clone();
+    graduated_skill.graduated = true;
+    indexd.update_skill(skill_id, &graduated_skill).await?;
+
+    info!(
+        name = %skill.name,
+        confidence = skill.confidence,
+        uses = skill.use_count,
+        "skill graduated to CLAUDE.md"
+    );
+
+    Ok(true)
+}
+
+fn format_graduation_rule(skill: &SkillDocument) -> String {
+    let mut rule = format!("### {}\n\n", skill.name);
+    rule.push_str(&format!("**When:** {}\n\n", skill.trigger));
+    rule.push_str(&format!("**Approach:** {}\n", skill.approach));
+    if !skill.failure_modes.is_empty() {
+        rule.push_str("\n**Watch out for:**\n");
+        for mode in &skill.failure_modes {
+            rule.push_str(&format!("- {mode}\n"));
+        }
+    }
+    rule.push_str(&format!(
+        "\n_Graduated from skill learning loop — confidence {:.0}%, {} uses, {} successes._\n",
+        skill.confidence * 100.0,
+        skill.use_count,
+        skill.success_count,
+    ));
+    rule
+}
+
+fn find_claude_md_for_domain(domain: &str) -> Result<std::path::PathBuf> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/home".into());
+    // Domain maps back to directory: "cosmix" -> ~/.cosmix, "ns" -> ~/.ns, "gh/foo" -> ~/.gh/foo
+    let dir = if domain == "general" {
+        std::path::PathBuf::from(&home)
+    } else {
+        let segments: Vec<&str> = domain.split('/').collect();
+        let mut path = std::path::PathBuf::from(&home);
+        for (i, seg) in segments.iter().enumerate() {
+            if i == 0 {
+                path.push(format!(".{seg}"));
+            } else {
+                path.push(seg);
+            }
+        }
+        path
+    };
+
+    let claude_md = dir.join("CLAUDE.md");
+    if claude_md.exists() {
+        Ok(claude_md)
+    } else {
+        anyhow::bail!("CLAUDE.md not found for domain '{}' at {}", domain, claude_md.display())
+    }
 }
 
 // --- Helpers ---

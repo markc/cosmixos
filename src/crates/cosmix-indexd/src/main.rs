@@ -221,6 +221,7 @@ enum Request {
     Update(UpdateRequest),
     Delete(DeleteRequest),
     List(ListRequest),
+    Feedback(FeedbackRequest),
     Stats,
 }
 
@@ -295,6 +296,12 @@ struct ListRequest {
     offset: usize,
 }
 
+#[derive(Deserialize)]
+struct FeedbackRequest {
+    id: i64,
+    useful: bool,
+}
+
 fn default_doc_prefix() -> String {
     "search_document: ".into()
 }
@@ -322,6 +329,7 @@ struct SearchResult {
     source: String,
     metadata: String,
     distance: f64,
+    feedback_score: i64,
 }
 
 #[derive(Serialize)]
@@ -537,6 +545,17 @@ impl VectorDb {
             )?;
         }
 
+        // Migration: add feedback_score column for relevance tracking
+        let has_feedback_col: bool = conn
+            .prepare("SELECT feedback_score FROM chunks LIMIT 0")
+            .is_ok();
+        if !has_feedback_col {
+            info!("migrating: adding feedback_score column");
+            conn.execute_batch(
+                "ALTER TABLE chunks ADD COLUMN feedback_score INTEGER NOT NULL DEFAULT 0;",
+            )?;
+        }
+
         let version: String = conn.query_row("SELECT vec_version()", [], |r| r.get(0))?;
         info!("vector db opened at {path} (sqlite-vec {version})");
         Ok(Self { conn })
@@ -605,7 +624,7 @@ impl VectorDb {
 
         // Build the base query — sqlite-vec requires MATCH + k in the WHERE clause
         let mut sql = String::from(
-            "SELECT v.rowid, v.distance, c.content, c.source, c.metadata
+            "SELECT v.rowid, v.distance, c.content, c.source, c.metadata, c.feedback_score
              FROM vec_chunks v
              JOIN chunks c ON c.id = v.rowid
              WHERE v.embedding MATCH ?1
@@ -679,13 +698,20 @@ impl VectorDb {
                 content: row.get(2)?,
                 source: row.get(3)?,
                 metadata: row.get(4)?,
+                feedback_score: row.get::<_, i64>(5).unwrap_or(0),
             })
         })?;
 
-        let mut results = Vec::new();
+        let mut results: Vec<SearchResult> = Vec::new();
         for row in rows {
             results.push(row?);
         }
+        // Re-sort by feedback-adjusted distance (lower = better)
+        results.sort_by(|a, b| {
+            let adj_a = a.distance - (a.feedback_score as f64 * 0.05);
+            let adj_b = b.distance - (b.feedback_score as f64 * 0.05);
+            adj_a.partial_cmp(&adj_b).unwrap_or(std::cmp::Ordering::Equal)
+        });
         Ok(results)
     }
 
@@ -808,6 +834,20 @@ impl VectorDb {
         }
 
         Ok((items, total))
+    }
+
+    fn feedback(&self, id: i64, useful: bool) -> Result<i64> {
+        let delta: i64 = if useful { 1 } else { -1 };
+        self.conn.execute(
+            "UPDATE chunks SET feedback_score = feedback_score + ?1 WHERE id = ?2",
+            rusqlite::params![delta, id],
+        )?;
+        let new_score: i64 = self.conn.query_row(
+            "SELECT feedback_score FROM chunks WHERE id = ?1",
+            [id],
+            |r| r.get(0),
+        )?;
+        Ok(new_score)
     }
 
     fn delete(&self, ids: &[i64]) -> Result<usize> {
@@ -1075,6 +1115,7 @@ async fn process_request(
         Request::Update(req) => handle_update(req, state, activity_tx).await,
         Request::Delete(req) => handle_delete(req, state).await,
         Request::List(req) => handle_list(req, state).await,
+        Request::Feedback(req) => handle_feedback(req, state).await,
         Request::Stats => handle_stats(state).await,
     }
 }
@@ -1307,6 +1348,16 @@ async fn handle_list(req: ListRequest, state: &Arc<Mutex<AppState>>) -> String {
     match guard.db.list(&req.source, req.limit, req.offset) {
         Ok((items, total)) => serde_json::to_string(&ListResponse { items, total }).unwrap(),
         Err(e) => json_error(&format!("list failed: {e}")),
+    }
+}
+
+async fn handle_feedback(req: FeedbackRequest, state: &Arc<Mutex<AppState>>) -> String {
+    let guard = state.lock().await;
+    match guard.db.feedback(req.id, req.useful) {
+        Ok(new_score) => {
+            serde_json::json!({"ok": true, "id": req.id, "feedback_score": new_score}).to_string()
+        }
+        Err(e) => json_error(&format!("feedback failed: {e}")),
     }
 }
 

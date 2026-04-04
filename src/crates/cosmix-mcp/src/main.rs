@@ -141,6 +141,20 @@ struct SkillsDeleteParams {
     id: i64,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct DocsFeedbackParams {
+    /// ID of the document chunk (from context_search results)
+    id: i64,
+    /// Was this document chunk useful for your task?
+    useful: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct SkillsGraduateParams {
+    /// ID of the skill to manually graduate to CLAUDE.md
+    id: i64,
+}
+
 impl CosmixMcp {
     async fn hub(&self) -> Result<&Arc<cosmix_client::HubClient>, String> {
         self.hub.get_or_try_init(|| async {
@@ -531,6 +545,7 @@ impl CosmixMcp {
             last_used: Some(now.clone()),
             created: now.clone(),
             updated: now,
+            graduated: false,
         };
 
         match indexd.store_skill(&skill).await {
@@ -586,15 +601,23 @@ impl CosmixMcp {
         };
 
         match cosmix_skills::refine_skill(&llm, &mut indexd, p.id, &existing, &outcome).await {
-            Ok(updated) => serde_json::json!({
-                "refined": true,
-                "id": p.id,
-                "name": &updated.name,
-                "version": updated.version,
-                "confidence": updated.confidence,
-                "use_count": updated.use_count,
-                "success_count": updated.success_count,
-            }).to_string(),
+            Ok(updated) => {
+                // Check if skill qualifies for graduation after refinement
+                let graduated = cosmix_skills::check_graduation(&mut indexd, p.id, &updated)
+                    .await
+                    .unwrap_or(false);
+
+                serde_json::json!({
+                    "refined": true,
+                    "id": p.id,
+                    "name": &updated.name,
+                    "version": updated.version,
+                    "confidence": updated.confidence,
+                    "use_count": updated.use_count,
+                    "success_count": updated.success_count,
+                    "graduated": graduated,
+                }).to_string()
+            }
             Err(e) => format!("ERROR refining: {e}"),
         }
     }
@@ -644,6 +667,79 @@ impl CosmixMcp {
 
         match indexd.delete_skill(p.id).await {
             Ok(()) => serde_json::json!({"deleted": true, "id": p.id}).to_string(),
+            Err(e) => format!("ERROR: {e}"),
+        }
+    }
+
+    /// Manually graduate a skill to CLAUDE.md, bypassing threshold checks.
+    /// Use this to promote a skill you trust as a permanent project rule.
+    #[tool]
+    async fn skills_graduate(&self, Parameters(p): Parameters<SkillsGraduateParams>) -> String {
+        let mut indexd = match self.indexd().await {
+            Ok(c) => c,
+            Err(e) => return format!("ERROR: {e}"),
+        };
+
+        // Fetch the skill
+        let (skills, _) = match indexd.list_skills(100, 0).await {
+            Ok(r) => r,
+            Err(e) => return format!("ERROR listing skills: {e}"),
+        };
+
+        let existing = match skills.into_iter().find(|(id, _)| *id == p.id) {
+            Some((_, doc)) => doc,
+            None => return format!("ERROR: skill ID {} not found", p.id),
+        };
+
+        if existing.graduated {
+            return serde_json::json!({"graduated": false, "reason": "already graduated"}).to_string();
+        }
+
+        match cosmix_skills::check_graduation(&mut indexd, p.id, &existing).await {
+            Ok(true) => serde_json::json!({
+                "graduated": true,
+                "id": p.id,
+                "name": &existing.name,
+            }).to_string(),
+            Ok(false) => {
+                // Force graduation even if below thresholds
+                // Temporarily boost to pass thresholds since this is manual
+                let mut boosted = existing.clone();
+                boosted.confidence = 1.0;
+                boosted.use_count = boosted.use_count.max(5);
+                boosted.success_count = boosted.success_count.max(4);
+                match cosmix_skills::check_graduation(&mut indexd, p.id, &boosted).await {
+                    Ok(_) => serde_json::json!({
+                        "graduated": true,
+                        "id": p.id,
+                        "name": &existing.name,
+                        "forced": true,
+                    }).to_string(),
+                    Err(e) => format!("ERROR graduating: {e}"),
+                }
+            }
+            Err(e) => format!("ERROR graduating: {e}"),
+        }
+    }
+
+    /// Report whether a retrieved document chunk was useful for your task.
+    /// Call this after using context from context_search to improve future search ranking.
+    /// Positive feedback boosts the chunk in future searches; negative feedback demotes it.
+    #[tool]
+    async fn docs_feedback(&self, Parameters(p): Parameters<DocsFeedbackParams>) -> String {
+        let mut indexd = match self.indexd().await {
+            Ok(c) => c,
+            Err(e) => return format!("ERROR: {e}"),
+        };
+
+        let req = serde_json::json!({
+            "action": "feedback",
+            "id": p.id,
+            "useful": p.useful,
+        });
+
+        match indexd.raw_request(&req).await {
+            Ok(resp) => serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "{}".into()),
             Err(e) => format!("ERROR: {e}"),
         }
     }
@@ -865,14 +961,15 @@ impl ServerHandler for CosmixMcp {
             "Cosmix AppMesh bridge with knowledge base and skill learning loop.\n\n\
              AMP tools: amp_call, amp_list_services, amp_list_peers, hub_ping.\n\
              Log tools: log_tail, log_search.\n\
-             Knowledge tools: context_search, index_workspace.\n\
-             Skill tools: skills_retrieve, skills_store, skills_refine, skills_list, skills_delete.\n\n\
+             Knowledge tools: context_search, index_workspace, docs_feedback.\n\
+             Skill tools: skills_retrieve, skills_store, skills_refine, skills_graduate, skills_list, skills_delete.\n\n\
              KNOWLEDGE PROTOCOL:\n\
              1. At the START of non-trivial tasks, call context_search with a task description.\n\
              2. Review returned skills, docs, and journals for relevant context.\n\
              3. After SUCCESSFULLY completing a non-trivial task, call skills_store to capture what you learned.\n\
              4. If you used a retrieved skill, call skills_refine to report whether it helped.\n\
-             5. Use index_workspace to index/re-index a workspace's _doc/ and _journal/ files."
+             5. Use index_workspace to index/re-index a workspace's _doc/ and _journal/ files.\n\
+             6. If you used retrieved docs/journals, call docs_feedback to report whether each chunk was useful."
         )
     }
 }
